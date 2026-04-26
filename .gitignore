@@ -1,0 +1,95 @@
+# =============================================================================
+# SECRETS — never commit these
+# =============================================================================
+secrets/
+secrets/*
+!secrets/README.md
+*.env
+.env
+.env.local
+.env.*.local
+*.token
+*.key
+*.pem
+webhooks.txt
+hermes-token.txt
+propstream-cookies.txt
+
+# =============================================================================
+# Personally Identifying Information
+# Skip-trace returns, owner contact data, exported lead lists. NEVER commit.
+# =============================================================================
+*-skiptrace.csv
+*-skiptrace.json
+*-skiptrace.xlsx
+*-leads.csv
+*-leads.json
+*-leads.xlsx
+exports/
+downloads/
+pii/
+
+# =============================================================================
+# OS junk
+# =============================================================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# =============================================================================
+# Editor / IDE
+# =============================================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# =============================================================================
+# Node / JavaScript (for the userscript build, if it grows)
+# =============================================================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json.bak
+.npm/
+.yarn/
+dist/
+build/
+
+# =============================================================================
+# Python (if any tooling grows here)
+# =============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# =============================================================================
+# Logs and temporary files
+# =============================================================================
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+
+# =============================================================================
+# TamperMonkey backup files (when editing the userscript)
+# =============================================================================
+*.user.js.bak
+*.user.js.tmp
