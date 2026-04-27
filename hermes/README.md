@@ -10,9 +10,11 @@ Hermes is the orchestrator bot powering the Discord operating layer. Its instanc
 
 - Routes messages between Discord channels per agent role
 - Maintains an HTTP endpoint that the PropStream userscript bridge polls
-- Dispatches commands to agents based on lane and routing rules
+- Dispatches commands to agents based on stage and routing rules
 - Pins architectural decisions to channels for new contributors
 - Tracks state across the Swarm (lead lifecycle transitions, quota rollups, kill-switch state)
+
+The server is stage-organized in Discord, but the PropStream bridge still emits and validates `lane: "houses"` for forward compatibility with future additional lanes.
 
 ## What goes here
 

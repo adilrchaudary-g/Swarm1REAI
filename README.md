@@ -2,7 +2,7 @@
 
 A multi-agent system for autonomous virtual wholesaling of single-family residential real estate. Coordinated through a Discord-based operating layer (Hermes/Alfred), powered by PropStream Pro as the data engine, and bridged to PropStream via a TamperMonkey userscript.
 
-> **Project status:** Architecture finalized. Hermes orchestrator running. PropStream bridge (this repo's primary deliverable) in development by Codex.
+> **Project status:** Alfred/Hermes runs separately from this repo. The active bridge contract is v4, the PropStream UI reference is now documented in-repo, and the userscript is in hardened-prototype status pending live selector validation and end-to-end operator testing.
 
 ---
 
@@ -14,19 +14,25 @@ The core insight: each step of the wholesaling pipeline is a different problem w
 
 ## Architecture at a glance
 
-Three layers, organized as Discord channels under different categories:
+The Discord server is now organized by pipeline stage, not by houses-vs-land top-level lanes:
 
-**Shared backbone** (lane-agnostic): `#ai-hq`, `#opportunity-intake`, `#lead-enrichment`, `#strategy-router`, `#follow-up-orchestrator`, `#kpi-intelligence`, `#queue`, `#done-feed`
+**00-command-center**: `#alfred`, `#ops-log`, `#announcements`
 
-**Houses lane** (SFR-specific): `#house-list-builder`, `#house-distress-monitoring`, `#house-seller-motivation`, `#seller-response-triage`, `#house-fast-underwriting`, `#house-outreach`, `#house-buyer-match-dispo`, `#house-propstream-commands`, `#house-propstream-results`
+**01-market-intel**: `#market-selector`, `#distress-monitoring`, `#list-builder`
 
-**Land lane** (vacant land, parallel structure): out of scope for v1.
+**02-lead-engine**: `#opportunity-intake`, `#lead-enrichment`, `#seller-motivation`, `#seller-persona`, `#seller-response-triage`, `#strategy-router`, `#follow-up-orchestrator`, `#queue`
 
-Hermes (orchestrator bot, instance name "Alfred") routes messages between channels, dispatches commands to agents, and exposes an HTTP endpoint for external integrations like the PropStream userscript bridge.
+**03-underwriting**: `#fast-underwriting`, `#kpi-intelligence`, `#done-feed`
+
+**04-propstream-bridge**: `#propstream-commands`, `#propstream-results`, `#propstream-quota`
+
+**05-build**: `#hermes-dev`, `#swarm-dev`, `#automation`, `#bugs`
+
+Hermes is the orchestrator/backend. Alfred is the running Discord bot instance the operator talks to. The PropStream bridge still emits `lane: "houses"` in its envelope contract for future-proofing, even though houses is the only active lane today.
 
 ```
                     ┌─────────────────────┐
-                    │  Houses-lane agents │
+                    │   Pipeline agents   │
                     │  (Discord channels) │
                     └──────────┬──────────┘
                                │
@@ -40,8 +46,8 @@ Hermes (orchestrator bot, instance name "Alfred") routes messages between channe
           │ HTTP (primary)     │ Discord (mirror)   │
           ▼                    ▼                    ▼
   ┌───────────────┐   ┌──────────────────┐  ┌──────────────────┐
-  │  Userscript   │   │ #house-propstream│  │ #house-propstream│
-  │  (browser)    │   │    -commands     │  │    -results      │
+  │  Userscript   │   │   #propstream-   │  │   #propstream-   │
+  │  (browser)    │   │     commands     │  │      results     │
   └───────┬───────┘   └──────────────────┘  └──────────────────┘
           │
           ▼
@@ -49,6 +55,10 @@ Hermes (orchestrator bot, instance name "Alfred") routes messages between channe
   │   PropStream  │
   │   web app     │
   └───────────────┘
+                                               ┌──────────────────┐
+                                               │   #propstream-   │
+                                               │      quota       │
+                                               └──────────────────┘
 ```
 
 ## Repo layout
@@ -63,13 +73,23 @@ wholesaling-swarm/
 │   │                               underwriting, data schema.
 │   ├── motivation-scoring-v1.md    Motivation score formula, signals,
 │   │                               decay, thresholds.
-│   ├── codex-handoff-v2.md         Spec for the PropStream TamperMonkey
-│   │                               bridge. Hand this to Codex.
+│   ├── codex-handoff-v4.md         Current spec for the PropStream
+│   │                               TamperMonkey bridge.
+│   ├── codex-handoff-v3.md         Previous bridge handoff, kept
+│   │                               for reference/history only.
+│   ├── codex-handoff-v2.md         Previous bridge handoff, kept
+│   │                               for reference/history only.
+│   ├── propstream-ui-reference/
+│   │   ├── README.md               PropStream UI ground truth for
+│   │   │                           selectors and flow assumptions.
+│   │   └── export-schema.md        Export column schema and canonical
+│   │                               field mapping.
 │   ├── regulatory-blocklist.md     States to skip / penalize. Refresh
 │   │                               quarterly.
 │   └── changelog.md                Decision log over time.
-├── userscript/                     Codex's deliverables go here.
-│   └── (empty — populated by Codex)
+├── userscript/                     TamperMonkey bridge implementation,
+│                                   protocol docs, selector map, and
+│                                   test checklist.
 ├── hermes/                         Hermes orchestrator code (if local).
 │   └── (empty — populated when Hermes is open-sourced internally)
 ├── scripts/
@@ -85,19 +105,20 @@ wholesaling-swarm/
 
 1. Read `docs/system-design-v1.md` and `docs/motivation-scoring-v1.md` to make sure the architecture still matches your mental model. If it doesn't, update them — the docs are the contract everyone else works from.
 2. Confirm `docs/regulatory-blocklist.md` is current. Re-check quarterly.
-3. Hand `docs/codex-handoff-v2.md` to Codex along with read access to this repo. Codex will fill in `userscript/`.
+3. Use `docs/codex-handoff-v4.md`, `docs/propstream-ui-reference/README.md`, `docs/propstream-ui-reference/export-schema.md`, and the files in `userscript/` as the active bridge package.
 4. Set up your secrets locally — see `secrets/README.md`.
 
 ### If you're Codex (or any future contributor on the userscript)
 
-1. Read `docs/codex-handoff-v2.md` end to end.
-2. Resolve the open decisions in Section 14 with the operator before writing code.
-3. Build deliverables into `userscript/` per Section 13.
-4. Update `docs/changelog.md` with significant decisions you make along the way.
+1. Read `docs/codex-handoff-v4.md` end to end.
+2. Read `docs/propstream-ui-reference/README.md` and `docs/propstream-ui-reference/export-schema.md` before touching selectors or export parsing.
+3. Resolve the open decisions in Section 4.4 with the operator before writing code.
+4. Build deliverables into `userscript/` per Section 13.
+5. Update `docs/changelog.md` with significant decisions you make along the way.
 
 ### If you're a future agent or human picking this up cold
 
-Read in this order: this README → `docs/system-design-v1.md` → `docs/motivation-scoring-v1.md` → `docs/codex-handoff-v2.md` → `docs/changelog.md`. That's roughly an hour of reading and you'll have full context.
+Read in this order: this README → `docs/system-design-v1.md` → `docs/motivation-scoring-v1.md` → `docs/codex-handoff-v4.md` → `docs/propstream-ui-reference/README.md` → `docs/propstream-ui-reference/export-schema.md` → `docs/changelog.md`. That's roughly an hour of reading and you'll have full context.
 
 ## Operating principles
 
@@ -105,7 +126,7 @@ These show up implicitly across the docs but are worth stating explicitly:
 
 **Confidence over confidence.** The system reports how much it trusts its own outputs. An underwrite with 0.4 confidence is treated differently from one with 0.9, even if the headline numbers are the same. Build agents that know what they don't know.
 
-**Lane discipline.** Houses agents touch houses. Land agents touch land. Shared backbone routes between them. Cross-lane logic requires explicit operator approval. This is what keeps the system from turning into spaghetti as it grows.
+**Lane future-proofing.** The server is stage-organized now, but the bridge still preserves an explicit `houses` lane in its envelope contract. That keeps future multi-lane expansion possible without reworking the bridge contract later.
 
 **Quota safety in depth.** Soft caps in the Swarm + soft caps in the userscript + PropStream's hard cap. Three layers, because a bug in any one of them shouldn't blow the monthly budget.
 

@@ -6,6 +6,30 @@ Each entry should answer: *what changed*, *why it changed*, and *what it affects
 
 ---
 
+## 2026-04-27 — Codex handoff v4 adopted locally
+
+**What:** Promoted `docs/codex-handoff-v4.md` to the active bridge handoff, added the in-repo PropStream UI ground-truth reference and export schema, removed `MONITOR` from the live userscript protocol surface, and aligned docs around export-schema-driven batch skip-trace as the preferred v4 path.
+
+**Why:** The operator gathered a real PropStream UI walkthrough and export sample after v3. Those artifacts resolve earlier uncertainty around monitoring, export format, skip-trace data shape, and AG-Grid behavior, so the repo should stop treating the older v3 assumptions as current truth.
+
+**Affects:** Root README, bridge docs, active handoff references, userscript protocol/selector guidance, and any future Alfred integration that expects `MONITOR` or format-picking export behavior.
+
+## 2026-04-27 — Codex handoff v3 adopted locally, with houses lane preserved
+
+**What:** Adopted Alfred/Hermes v3 naming and stage-based server structure in the local repo while explicitly preserving `lane: "houses"` and `OUT_OF_LANE_SCOPE` behavior in the bridge for future additional lanes.
+
+**Why:** The operator has moved the Discord/Hermes operating model to stage-based categories and new PropStream bridge channels, but still wants the bridge to remain lane-scoped so a second lane can be added later without breaking protocol or runtime assumptions.
+
+**Affects:** Root README, bridge docs, userscript config/alerts, and any future Hermes integration work that relies on channel naming or lane validation.
+
+## 2026-04-26 — Initial userscript scaffold added
+
+**What:** Added the first implementation pass of the PropStream TamperMonkey bridge under `userscript/`, including the installable script, protocol reference, selector-maintenance guide, and operator test checklist.
+
+**Why:** The repo previously held only the spec and placeholder folder. Shipping the scaffold makes the bridge concrete enough to wire into Hermes, configure secrets locally, and begin real PropStream validation without waiting on a second architecture cycle.
+
+**Affects:** `userscript/`, operator setup flow, Hermes integration testing, and future selector-hardening work against the live PropStream DOM.
+
 ## 2026-04-26 — Initial repo scaffold
 
 **What:** Created the wholesaling-swarm repo with full doc set, .gitignore, secrets layout, and helper scripts.
@@ -51,7 +75,7 @@ Each entry should answer: *what changed*, *why it changed*, and *what it affects
 
 **Why:** Motivation is the queue priority signal — it's how the system answers "of 5,000 leads, which 50 should I touch today?" Worth a dedicated doc rather than living buried in the chat.
 
-**Affects:** `#house-seller-motivation` (formula), `#queue` (priority sorting), `#strategy-router` (persona-aware adjustment).
+**Affects:** `#seller-motivation` (formula), `#queue` (priority sorting), `#strategy-router` (persona-aware adjustment).
 
 ---
 
