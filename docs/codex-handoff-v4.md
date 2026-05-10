@@ -46,6 +46,7 @@ The Discord server "adils demo agent home" is organized into six numbered catego
 | Channel | Role |
 |---|---|
 | `#alfred` | Primary Hermes command channel. Operator mentions the bot here. Set-home is set to this channel. |
+| `#portfolio-director` | Wholesale-only overview agent. Summarizes pipeline health across market intel, lead engine, and underwriting; surfaces bottlenecks and top-level priorities. |
 | `#ops-log` | Operational event log |
 | `#announcements` | Cross-cutting announcements |
 

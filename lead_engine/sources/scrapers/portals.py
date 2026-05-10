@@ -1,0 +1,106 @@
+"""Portal configurations for code violation scraping.
+
+Each portal defines: API URL, type (socrata/arcgis), field mappings,
+and filter criteria for pulling open violations from the last 30 days.
+"""
+
+from __future__ import annotations
+
+VIOLATION_KEYWORDS = [
+    "grass", "weeds", "overgrown", "vegetation", "lawn", "mowing",
+    "maintenance", "deferred", "deteriorat", "dilapidat", "blight",
+    "nuisance", "abandon", "vacant", "board", "condemn",
+    "debris", "junk", "trash", "rubbish", "litter",
+    "structure", "unsafe", "hazard", "fence", "roof",
+    "exterior", "paint", "siding", "window", "door",
+    "plumbing", "electrical", "building", "permit", "zoning",
+    "inoperable", "vehicle", "parking",
+    "property", "residential", "housing", "dwelling",
+]
+
+PORTALS: list[dict] = [
+    {
+        "id": "cincinnati_oh",
+        "name": "Cincinnati, OH",
+        "state": "OH",
+        "county": "Hamilton",
+        "type": "socrata",
+        "base_url": "https://data.cincinnati-oh.gov",
+        "dataset_id": "cncm-znd6",
+        "field_map": {
+            "address": "full_address",
+            "violation_type": "comp_type_desc",
+            "violation_subtype": "sub_type_desc",
+            "status": "data_status_display",
+            "date_opened": "entered_date",
+            "latitude": "latitude",
+            "longitude": "longitude",
+        },
+        "status_filter": "data_status_display NOT IN ('CLOSED','CANCEL')",
+        "date_field": "entered_date",
+    },
+    {
+        "id": "austin_tx",
+        "name": "Austin, TX",
+        "state": "TX",
+        "county": "Travis",
+        "type": "socrata",
+        "base_url": "https://data.austintexas.gov",
+        "dataset_id": "6wtj-zbtb",
+        "field_map": {
+            "address": "address",
+            "violation_type": "description",
+            "status": "status",
+            "date_opened": "opened_date",
+            "date_closed": "closed_date",
+            "case_id": "case_id",
+            "zip": "zip_code",
+            "latitude": "latitude",
+            "longitude": "longitude",
+            "parcel": "parcelid",
+        },
+        "status_filter": "status = 'Active'",
+        "date_field": "opened_date",
+    },
+    {
+        "id": "cleveland_oh",
+        "name": "Cleveland, OH",
+        "state": "OH",
+        "county": "Cuyahoga",
+        "type": "arcgis",
+        "base_url": "https://services3.arcgis.com/dty2kHktVXHrqO8i/arcgis/rest/services/Violation_Status_History/FeatureServer/0",
+        "field_map": {
+            "address": "PRIMARY_ADDRESS",
+            "violation_type": "TYPE_OF_VIOLATION",
+            "status": "TASK_STATUS",
+            "task": "TASK_NAME",
+            "date_opened": "FILE_DATE",
+            "parcel": "PARCEL_NUMBER",
+            "case_id": "RECORD_ID",
+        },
+        "where_filter": "TASK_STATUS NOT IN ('Completed','Closed','Void')",
+        "date_field": "FILE_DATE",
+    },
+    {
+        "id": "fort_worth_tx",
+        "name": "Fort Worth, TX",
+        "state": "TX",
+        "county": "Tarrant",
+        "type": "arcgis",
+        "base_url": "https://services5.arcgis.com/3ddLCBXe1bRt7mzj/arcgis/rest/services/CFW_Open_Data_Code_Violations_Table_view/FeatureServer/0",
+        "field_map": {
+            "address": "Violation_Address",
+            "city": "City",
+            "state_field": "State",
+            "violation_type": "Complaint_Type_Description",
+            "status": "Violation_Current_Status",
+            "case_status": "Case_Current_Status",
+            "date_opened": "Case_Created_Date",
+            "case_id": "Case_ID",
+            "latitude": "Latitude",
+            "longitude": "Longitude",
+        },
+        "where_filter": "Violation_Current_Status <> 'Closed'",
+        "date_field": "Case_Created_Date",
+    },
+]

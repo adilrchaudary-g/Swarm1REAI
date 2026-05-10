@@ -1,0 +1,18 @@
+{
+  "source_type": "code_violations",
+  "harvest_date": "2026-05-08",
+  "county": "Harris, TX",
+  "geography": "harris-tx",
+  "files": ["violations.csv"],
+  "column_map": {
+    "property_address": "address_street",
+    "city": "address_city",
+    "state": "address_state",
+    "zip_code": "address_zip",
+    "parcel_number": "apn",
+    "property_owner": "owner_name",
+    "violation_type": "_violation_type",
+    "violation_date": "_violation_date",
+    "case_status": "_violation_status"
+  }
+}

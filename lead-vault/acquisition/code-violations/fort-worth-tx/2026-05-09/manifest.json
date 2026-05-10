@@ -1,0 +1,30 @@
+{
+  "source_type": "code_violations",
+  "harvest_date": "2026-05-09",
+  "geography": "Fort Worth, TX",
+  "county": "Tarrant",
+  "state": "TX",
+  "portal_id": "fort_worth_tx",
+  "portal_type": "arcgis",
+  "data_quality_tier": "PARTIAL",
+  "acquisition_method": "api_scrape",
+  "files": [
+    "violations-fort-worth-tx.csv"
+  ],
+  "record_count": 386,
+  "raw_fetched": 500,
+  "filtered": 456,
+  "days_back": 30,
+  "scraped_at": "2026-05-09T21:21:14.188486",
+  "column_map": {
+    "address_street": "address_street",
+    "city": "address_city",
+    "state": "address_state",
+    "zip": "address_zip",
+    "county": "county",
+    "violation_type": "_violation_type",
+    "date_opened": "_violation_date",
+    "status": "_violation_status",
+    "case_id": "_case_number"
+  }
+}

@@ -1,0 +1,6 @@
+address_street,city,state,county,violation_type,violation_subtype,status,date_opened,latitude,longitude
+625 PROBASCO ST,Cincinnati,OH,Hamilton,Trash/Litter/Tall Grass Complaint,"Tall grass/weeds, private prop",Closed - No Violation,2026-05-06T00:00:00.000,39.1333632417172,-84.5276752778583
+2363 BALTIMORE AV,Cincinnati,OH,Hamilton,Trash/Litter/Tall Grass Cleaning,"Tall grass/weeds, private prop",New,2026-05-06T00:00:00.000,39.1517568913964,-84.5626314234058
+4629 GLENWAY AV,Cincinnati,OH,Hamilton,Trash/Litter/Tall Grass Complaint,"Litter,  private property",Intake - New Case,2026-05-06T00:00:00.000,39.1144926349556,-84.592434937313
+6 BURTON AV,Cincinnati,OH,Hamilton,Code Enforcement - Buildings with Residences,RES CODE STANDARD,Intake - New Case,2026-05-06T00:00:00.000,39.1492381107315,-84.4815514263443
+3738 RIVER RD,Cincinnati,OH,Hamilton,Trash/Litter/Tall Grass Cleaning,"Tall grass/weeds, private prop",New,2026-05-06T00:00:00.000,39.0785531050948,-84.5966939261266

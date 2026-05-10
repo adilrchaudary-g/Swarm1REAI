@@ -1,0 +1,6 @@
+property_address,city,state,zip_code,parcel_number,property_owner,violation_type,violation_date,case_status
+1234 Oak Lane,Houston,TX,77002,1234-56-789,John Smith,Structural damage,2026-01-15,Open
+5678 Elm Street,Houston,TX,77003,5678-90-123,Maria Garcia,Overgrown vegetation,2026-02-20,Open
+9012 Pine Ave,Houston,TX,77004,9012-34-567,Robert Johnson Estate,Condemned structure,2025-11-01,Open
+3456 Maple Dr,Houston,TX,77005,3456-78-901,Williams Family Trust,Missing roof,2026-03-10,Open
+7890 Cedar Blvd,Houston,TX,77006,7890-12-345,James Brown LLC,Electrical hazard,2026-04-01,Open

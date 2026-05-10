@@ -1,10 +1,45 @@
 # Wholesaling Agent System — Design Spec v1
 
-This is the deep-dive on the four highest-leverage modules of your system, with regulatory filtering baked into the Market Selector as you asked. Think of this as the design doc you'd write before building a game — each agent is a system with inputs, rules, and outputs, and they pass data to each other in a defined shape.
+This is the deep-dive on the core modules of your system, with regulatory filtering baked into the Market Selector as you asked. Think of this as the design doc you'd write before building a game — each agent is a system with inputs, rules, and outputs, and they pass data between each other in a defined shape.
 
 ---
 
-## 0. The Regulatory Pre-Filter (runs before everything else)
+## 0. Portfolio Director Agent — Wholesale Overview and Bottleneck Detection
+
+This is the overview agent for the active wholesaling system. Not a multi-division strategist, not a second underwriter, and not an outreach bot. Its job is to watch the flow of wholesale opportunities across market intel, lead engine, and underwriting, then tell you where attention is actually needed.
+
+### What it watches
+
+- **Market Selector output** — are the target zips producing enough viable raw candidates?
+- **Lead-engine flow** — how many leads are entering intake, enrichment, scoring, routing, and queue?
+- **Underwriting throughput** — how many leads are clearing underwriting, stalling in yellow-confidence review, or dying?
+- **Queue health** — is the queue filling with actionable opportunities or with noise?
+- **Done-feed outcomes** — what kinds of leads are converting, dying, or getting stuck?
+
+### What it produces
+
+On a defined cadence, the Portfolio Director emits a wholesale-only overview:
+
+- where the bottleneck currently is
+- whether the system needs more raw leads, better filtering, or more operator attention on the top of queue
+- which stage is dropping too many otherwise-viable deals
+- which recent lead cohorts are producing the best downstream outcomes
+
+### What it is not allowed to do
+
+- It does **not** create a second strategy division.
+- It does **not** route between wholesaling, rentals, commercial, or land.
+- It does **not** replace the Strategy Router's pass/fail gates.
+- It does **not** produce final MAOs or override underwriting numbers.
+- It does **not** own outbound outreach or buyer-side dispo.
+
+### Simple operating rule
+
+The Portfolio Director is a top-level observer and prioritizer for the wholesaling pipeline only. It can escalate attention, request focus, and summarize health, but it should not silently mutate downstream rules that belong to the specialized agents.
+
+---
+
+## 1. The Regulatory Pre-Filter (runs before everything else)
 
 Your instinct to skip hostile states is exactly right — the math on a restricted state is bad. Even if you find a juicy deal there, closing it legally requires workarounds (double closings, licensed partners, extra disclosures) that either kill the margin or add legal risk you don't need. Easier to just not hunt there.
 
@@ -42,7 +77,7 @@ Texas, Florida, Georgia, Alabama, Missouri, Arkansas, Mississippi, Louisiana, Oh
 
 ---
 
-## 1. Market Selector — Zip Code Ranking Algorithm
+## 2. Market Selector — Zip Code Ranking Algorithm
 
 This is the "which map should I farm" agent. In a game, some maps have better loot tables than others — same deal here. Your job is to rank every zip code in the US on a single score, then pick the top 20–50 to actively hunt. The rest you ignore until the ranking shifts.
 
@@ -57,6 +92,8 @@ Six categories of data feed into the score. Getting these is a mix of paid APIs 
 **3. Flipper density.** Count unique buyers who bought 2+ properties in the last 12 months and sold at least one. These are the flippers you want in your buyer pool. A zip with 20+ active flippers is a healthy ecosystem. A zip with 2 is brittle — if those two lose interest, you have no one to assign to.
 
 **4. Distress signal density.** Sum of: pre-foreclosure notices filed (NOD/lis pendens) in the last 90 days, tax delinquency filings, probate filings referencing properties in the zip, code violation notices, and listings withdrawn/expired from MLS in the last 180 days. Higher = more motivated sellers per thousand households.
+
+Inside this bucket, listed-property fatigue signals are worth treating as first-class distress hints rather than a separate system. Repeated price cuts, pending-to-back-on-market reversions, relist cycles, and wording like "as-is," "cash only," "investor special," "needs TLC," or "bring all offers" are all evidence that a seller may still be technically listed but is starting to behave like an off-market motivation case.
 
 **5. Wholesaler saturation.** This is the one most beginner wholesalers miss. Count direct mail permits filed with USPS, active wholesaler LLCs registered with properties in the zip, and bandit sign density if you can get it. A zip with zero wholesalers sounds great but usually means there's a reason no one's there (weak buyer pool, hostile regulation, bad comps). A zip with 50 active wholesalers is a bloodbath — every motivated seller has had 40 postcards already. The sweet spot is moderate saturation: 5–15 competitors.
 
@@ -91,7 +128,7 @@ Every Monday, the Market Selector emits a ranked list of the top 50 zips nationa
 
 ---
 
-## 2. Seller Persona Agent — Signal-Based Classification
+## 3. Seller Persona Agent — Signal-Based Classification
 
 This is the "enemy type classifier" of your system. The same message — "I want to buy your house cash, no fees" — lands completely differently on a tired landlord than a probate heir, because they're in different life situations with different pain points. If the system treats all sellers as one archetype, your response rate is maybe 1%. If it classifies correctly and matches copy to persona, response rate can 3–5x.
 
@@ -124,6 +161,8 @@ The key signals, ordered by predictive power:
 5. **Property condition signals** — Street View, satellite, last listing photos if any
 6. **Demographic overlay** — age of owner (from voter records if legal, or property tax senior exemptions), household composition
 
+Wherever image history exists, change-over-time matters more than any single ugly frame. A house that looks mediocre once may be noise; a house that clearly declined across Street View captures, satellite updates, or old-vs-current listing photos is much more predictive of real neglect or seller fatigue.
+
 ### Why outreach copy has to differ
 
 This is where a lot of wholesalers lose deals they already won on price. Some examples of what shifts by persona:
@@ -140,7 +179,7 @@ The Seller Persona Agent's output isn't just a label — it's a **treatment plan
 
 ---
 
-## 3. Underwriting Agent — MAO Formula and Confidence Scoring
+## 4. Underwriting Agent — MAO Formula and Confidence Scoring
 
 This is the damage calculator of your system. Every lead that clears the router hits this agent, which answers two questions: *what's the maximum I can pay and still make my minimum fee*, and *how much do I trust that number*.
 
@@ -197,6 +236,8 @@ You can't drive the property, so repair estimation is a stack of signals with er
 5. **Year built + typical lifecycle costs** — a 1965 house with no renovation permits in 20 years almost certainly needs HVAC, roof, and at least one of plumbing/electrical
 6. **Square footage × per-foot renovation cost for the zip** — light cosmetic ($15/sqft), moderate ($35/sqft), heavy ($65/sqft), full gut ($100+/sqft). The zip-level cost comes from regional construction cost indexes.
 
+This is a triage tool, not permission to hallucinate certainty. The goal of photo-assisted underwriting is usually "is this worth ten more minutes?" rather than "can we safely lock this up sight unseen?" Visible issues are informative; hidden mechanicals, foundation, drainage, electrical, and permit problems are where virtual estimates go to die.
+
 The agent assigns a **renovation tier** (cosmetic / moderate / heavy / gut) based on these signals and outputs a repair estimate with a range, not a point. On a 1,500 sqft house that looks moderate: $45k–$60k.
 
 ### Confidence scoring — the critical layer
@@ -205,7 +246,7 @@ Every underwriting output comes with a confidence score from 0.0 to 1.0, built f
 
 **ARV confidence:** High when you have 5+ clean comps with tight price-per-foot spread (coefficient of variation under 0.15). Low when comps are sparse, old, or wildly divergent.
 
-**Repair confidence:** High when you have recent interior photos and the property is clearly cosmetic. Low when you have no interior access at all, or when signals conflict (exterior looks maintained but permit history suggests neglect).
+**Repair confidence:** High when you have recent interior photos and the property is clearly cosmetic. Low when you have no interior access at all, when the visible condition conflicts with permit history, or when the big-ticket items are mostly hidden from view.
 
 **Data freshness:** High when all underlying data is under 30 days old. Degrades linearly to zero by 180 days.
 
@@ -223,7 +264,7 @@ Using `min` instead of average is deliberate — the weakest link sets your conf
 
 ---
 
-## 4. Data Schema — What Every Lead Carries
+## 5. Data Schema — What Every Lead Carries
 
 If you ever build this as actual software, the schema is what every database table looks like and what shape the data takes as it moves between agents. Think of it like the stats sheet for every unit in a game — every lead is an entity with a fixed set of attributes, and every agent reads/writes a specific subset.
 

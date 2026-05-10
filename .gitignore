@@ -28,6 +28,16 @@ propstream-cookies.txt
 exports/
 downloads/
 pii/
+hermes/data/propstream.db
+hermes/data/propstream.db-*
+hermes/data/artifacts/exports/*.csv
+hermes/data/artifacts/exports/*.xlsx
+!hermes/data/
+!hermes/data/.gitkeep
+!hermes/data/artifacts/
+!hermes/data/artifacts/.gitkeep
+!hermes/data/artifacts/exports/
+!hermes/data/artifacts/exports/.gitkeep
 
 # =============================================================================
 # OS junk
@@ -93,3 +103,23 @@ temp/
 # =============================================================================
 *.user.js.bak
 *.user.js.tmp
+
+# =============================================================================
+# PropStream runner runtime artifacts
+# =============================================================================
+propstream-runner/.runtime/
+
+# =============================================================================
+# Lead vault contents (filesystem-first lead storage)
+# Keep the scaffold in git, never commit harvested lead data.
+# =============================================================================
+lead-vault/acquisition/propstream/**
+!lead-vault/acquisition/propstream/.gitkeep
+lead-vault/pipeline/intake/**
+!lead-vault/pipeline/intake/.gitkeep
+lead-vault/pipeline/enriched/**
+!lead-vault/pipeline/enriched/.gitkeep
+lead-vault/pipeline/queue/**
+!lead-vault/pipeline/queue/.gitkeep
+lead-vault/pipeline/done/**
+!lead-vault/pipeline/done/.gitkeep

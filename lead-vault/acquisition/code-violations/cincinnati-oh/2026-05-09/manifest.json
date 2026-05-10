@@ -1,0 +1,30 @@
+{
+  "source_type": "code_violations",
+  "harvest_date": "2026-05-09",
+  "geography": "Cincinnati, OH",
+  "county": "Hamilton",
+  "state": "OH",
+  "portal_id": "cincinnati_oh",
+  "portal_type": "socrata",
+  "data_quality_tier": "PARTIAL",
+  "acquisition_method": "api_scrape",
+  "files": [
+    "violations-cincinnati-oh.csv"
+  ],
+  "record_count": 5,
+  "raw_fetched": 5,
+  "filtered": 5,
+  "days_back": 30,
+  "scraped_at": "2026-05-09T21:35:46.318643",
+  "column_map": {
+    "address_street": "address_street",
+    "city": "address_city",
+    "state": "address_state",
+    "zip": "address_zip",
+    "county": "county",
+    "violation_type": "_violation_type",
+    "date_opened": "_violation_date",
+    "status": "_violation_status",
+    "case_id": "_case_number"
+  }
+}

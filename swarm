@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+#
+# swarm - manage the wholesaling-swarm dashboard
+#
+# Usage:
+#   ./swarm start     Start Hermes (API + dashboard) via launchd
+#   ./swarm stop      Stop the server
+#   ./swarm restart   Restart the server
+#   ./swarm status    Check if the server is running
+#   ./swarm build     Rebuild the dashboard frontend
+#   ./swarm logs      Tail the server logs
+#   ./swarm install   Register the LaunchAgent (run once)
+#   ./swarm uninstall Remove the LaunchAgent
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLIST_LABEL="com.wholesaling-swarm.hermes"
+PLIST_PATH="$HOME/Library/LaunchAgents/${PLIST_LABEL}.plist"
+LOG_FILE="/tmp/hermes-swarm.log"
+PORT=8765
+
+cd "$SCRIPT_DIR"
+
+case "${1:-help}" in
+  start)
+    if curl -s -o /dev/null -w '' "http://localhost:${PORT}/health" 2>/dev/null; then
+      echo "Already running on port ${PORT}"
+      exit 0
+    fi
+    if launchctl list "$PLIST_LABEL" &>/dev/null; then
+      launchctl kickstart -k "gui/$(id -u)/${PLIST_LABEL}" 2>/dev/null || \
+        launchctl start "$PLIST_LABEL"
+    else
+      echo "LaunchAgent not loaded. Run: ./swarm install"
+      echo "Starting manually..."
+      nohup /opt/homebrew/bin/python3 -m hermes serve --host 127.0.0.1 --port "$PORT" \
+        >> "$LOG_FILE" 2>&1 &
+      echo "PID: $!"
+    fi
+    sleep 2
+    if curl -s -o /dev/null "http://localhost:${PORT}/health" 2>/dev/null; then
+      echo "Hermes running on http://localhost:${PORT}"
+    else
+      echo "Failed to start. Check: tail -f $LOG_FILE"
+      exit 1
+    fi
+    ;;
+
+  stop)
+    if launchctl list "$PLIST_LABEL" &>/dev/null; then
+      launchctl stop "$PLIST_LABEL" 2>/dev/null || true
+    fi
+    # Also kill any manual instances
+    lsof -ti ":${PORT}" 2>/dev/null | xargs kill 2>/dev/null || true
+    echo "Stopped"
+    ;;
+
+  restart)
+    "$0" stop
+    sleep 1
+    "$0" start
+    ;;
+
+  status)
+    if curl -s "http://localhost:${PORT}/health" 2>/dev/null | grep -q '"ok"'; then
+      PID=$(lsof -ti ":${PORT}" 2>/dev/null | head -1)
+      RSS=$(ps -p "$PID" -o rss= 2>/dev/null | awk '{printf "%.1f", $1/1024}')
+      echo "RUNNING  pid=${PID}  mem=${RSS}MB  http://localhost:${PORT}"
+    else
+      echo "STOPPED"
+    fi
+    ;;
+
+  build)
+    echo "Building dashboard..."
+    cd "$SCRIPT_DIR/dashboard"
+    npm run build
+    echo "Done. Restart server to pick up changes: ./swarm restart"
+    ;;
+
+  logs)
+    tail -f "$LOG_FILE"
+    ;;
+
+  install)
+    if [ ! -f "$PLIST_PATH" ]; then
+      echo "LaunchAgent plist not found at $PLIST_PATH"
+      exit 1
+    fi
+    # Build dashboard first
+    "$0" build
+    # Stop any existing instances
+    "$0" stop 2>/dev/null || true
+    # Load the agent
+    launchctl bootout "gui/$(id -u)/${PLIST_LABEL}" 2>/dev/null || true
+    launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH"
+    sleep 2
+    "$0" status
+    echo ""
+    echo "LaunchAgent installed. Server will auto-start on login and restart on crash."
+    ;;
+
+  uninstall)
+    launchctl bootout "gui/$(id -u)/${PLIST_LABEL}" 2>/dev/null || true
+    echo "LaunchAgent removed. Server will no longer auto-start."
+    ;;
+
+  help|*)
+    echo "Usage: ./swarm {start|stop|restart|status|build|logs|install|uninstall}"
+    echo ""
+    echo "  start      Start the server"
+    echo "  stop       Stop the server"
+    echo "  restart    Restart the server"
+    echo "  status     Check server status"
+    echo "  build      Rebuild the dashboard frontend"
+    echo "  logs       Tail server logs"
+    echo "  install    Register LaunchAgent (auto-start on login, auto-restart on crash)"
+    echo "  uninstall  Remove LaunchAgent"
+    ;;
+esac

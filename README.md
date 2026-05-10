@@ -1,14 +1,14 @@
 # Wholesaling Swarm
 
-A multi-agent system for autonomous virtual wholesaling of single-family residential real estate. Coordinated through a Discord-based operating layer (Hermes/Alfred), powered by PropStream Pro as the data engine, and bridged to PropStream via a TamperMonkey userscript.
+A multi-agent system for autonomous virtual wholesaling of single-family residential real estate. Coordinated through a Discord-based operating layer (Hermes/Alfred), powered by PropStream Pro as the data engine, with both a browser userscript bridge and a Playwright-based runner available for PropStream execution.
 
-> **Project status:** Alfred/Hermes runs separately from this repo. The active bridge contract is v4, the PropStream UI reference is now documented in-repo, and the userscript is in hardened-prototype status pending live selector validation and end-to-end operator testing.
+> **Project status:** Alfred/Hermes runs separately from this repo. The active bridge contract is v4, the PropStream UI reference is now documented in-repo, the userscript remains available, and `propstream-runner/` is the preferred path for filesystem-first PropStream harvesting.
 
 ---
 
 ## What this is
 
-Most wholesaling operations are one person on a phone with a spreadsheet. This is a swarm of specialized AI agents that handle market selection, distress monitoring, persona classification, motivation scoring, underwriting, and routing — surfacing only the highest-quality leads to a human at the end. The human's job becomes "talk to the seller and close," not "find the seller."
+Most wholesaling operations are one person on a phone with a spreadsheet. This is a swarm of specialized AI agents that handle market selection, distress monitoring, persona classification, motivation scoring, underwriting, routing, and portfolio-level oversight — surfacing only the highest-quality leads to a human at the end. The human's job becomes "talk to the seller and close," not "find the seller."
 
 The core insight: each step of the wholesaling pipeline is a different problem with different signals, different data sources, and different failure modes. Treating them as separate agents that pass data between each other (instead of one monolithic system) means each piece can be tested, improved, and replaced independently.
 
@@ -16,7 +16,7 @@ The core insight: each step of the wholesaling pipeline is a different problem w
 
 The Discord server is now organized by pipeline stage, not by houses-vs-land top-level lanes:
 
-**00-command-center**: `#alfred`, `#ops-log`, `#announcements`
+**00-command-center**: `#alfred`, `#portfolio-director`, `#ops-log`, `#announcements`
 
 **01-market-intel**: `#market-selector`, `#distress-monitoring`, `#list-builder`
 
@@ -92,6 +92,10 @@ wholesaling-swarm/
 │                                   test checklist.
 ├── hermes/                         Hermes orchestrator code (if local).
 │   └── (empty — populated when Hermes is open-sourced internally)
+├── lead-vault/                     Filesystem-first lead storage scaffold:
+│   │                               acquisition archive + pipeline folders
+├── propstream-runner/              Playwright-based PropStream runner with
+│   │                               direct harvest + on-disk archiving
 ├── scripts/
 │   └── test-webhook.sh             Verify a Discord webhook works
 │                                   before wiring it into the userscript.
@@ -105,7 +109,7 @@ wholesaling-swarm/
 
 1. Read `docs/system-design-v1.md` and `docs/motivation-scoring-v1.md` to make sure the architecture still matches your mental model. If it doesn't, update them — the docs are the contract everyone else works from.
 2. Confirm `docs/regulatory-blocklist.md` is current. Re-check quarterly.
-3. Use `docs/codex-handoff-v4.md`, `docs/propstream-ui-reference/README.md`, `docs/propstream-ui-reference/export-schema.md`, and the files in `userscript/` as the active bridge package.
+3. For filesystem-first PropStream harvesting, use `propstream-runner/` and `lead-vault/`. For the legacy browser-embedded bridge path, use `docs/codex-handoff-v4.md`, `docs/propstream-ui-reference/README.md`, `docs/propstream-ui-reference/export-schema.md`, and the files in `userscript/`.
 4. Set up your secrets locally — see `secrets/README.md`.
 
 ### If you're Codex (or any future contributor on the userscript)

@@ -6,6 +6,54 @@ Each entry should answer: *what changed*, *why it changed*, and *what it affects
 
 ---
 
+## 2026-05-01 — Claude passover doc added for readiness-template execution
+
+**What:** Added `docs/claude-operational-readiness-passover.md`, a task-specific handoff doc telling Claude how to convert the repo's current truth into a filled operational readiness working document from the template.
+
+**Why:** The readiness template by itself is a structure. The operator also needs an execution brief that makes the constraints, active scope, source-of-truth files, current live findings, and fill rules explicit so another model does not widen scope or invent operational status that has not been proven.
+
+**Affects:** Claude handoff quality, readiness-document consistency, and future operator reviews of what is and is not production-ready.
+
+---
+
+## 2026-05-01 — Operational readiness template added
+
+**What:** Added `docs/operational-readiness-template.md` as a fill-in working template for mapping the exact gates, blockers, quality rules, and signoff conditions required before the system is treated as operational for live PropStream list-building and skip trace runs.
+
+**Why:** The current gap is not architectural theory. It is operational clarity. A single template makes it easier to separate what is already proven, what is still failing, what the ideal list must look like, and what must be true before a real high-volume batch is allowed.
+
+**Affects:** Live test planning, run readiness reviews, list quality definition, save/export/skip-trace validation, and operator launch criteria.
+
+---
+
+## 2026-05-01 — Playwright runner promoted as preferred filesystem-first PropStream path
+
+**What:** Promoted `propstream-runner/` as the preferred replacement for TamperMonkey when the goal is direct PropStream harvesting into a local lead vault rather than Discord-first organization. Added a repo-level `lead-vault/` scaffold, wired the runner's archive root to that folder by default, and documented the split between runtime artifacts and harvested lead storage.
+
+**Why:** TamperMonkey is workable for in-page control, but it is a poor center of gravity for a local lead system. Userscript storage is browser-scoped, filesystem handling is indirect, and the Discord/Hermes mirroring model is unnecessary for direct list-building. The Playwright runner already supports authenticated browser automation plus on-disk archival, so making it the primary path is lower-risk and better aligned with a folder-first workflow.
+
+**Affects:** `propstream-runner/`, `lead-vault/`, root README guidance, harvested lead storage defaults, and future PropStream acquisition work.
+
+---
+
+## 2026-05-01 — Portfolio Director added as wholesale-only overview agent
+
+**What:** Added a `Portfolio Director` agent to the active architecture as a command-center overview layer for wholesale deals flowing through market intel, lead engine, and underwriting. Updated the root README, `docs/system-design-v1.md`, and `docs/codex-handoff-v4.md` to reflect the new role and channel.
+
+**Why:** The current system had strong specialized agents but no explicit top-level observer for the wholesaling pipeline as a whole. The operator wants an overview agent that can spot bottlenecks, summarize queue health, and direct attention without reopening multi-division strategy, outbound outreach ownership, or buyer-side workflow scope.
+
+**Affects:** `#portfolio-director`, command-center architecture, top-level wholesale prioritization, and any future Hermes routines that emit pipeline-health summaries for operator review.
+
+---
+
+## 2026-05-01 — System design doc tightened around listed-property fatigue and virtual-underwrite limits
+
+**What:** Added a small set of transcript-aligned clarifications to `docs/system-design-v1.md`: listed-property fatigue signals now sit explicitly inside the existing distress bucket, image-history change detection is called out inside persona/condition analysis, and virtual underwriting is framed more clearly as triage with confidence limits rather than final authority.
+
+**Why:** These ideas already fit the current architecture and sharpen how the existing agents should reason, but they do not justify new modules or a new pipeline shape. The useful move is to make the existing design more explicit without widening scope.
+
+**Affects:** `#market-selector`, `#seller-persona`, `#fast-underwriting`, and any future implementation that consumes listed-market text/history or visual condition signals.
+
 ## 2026-04-27 — Codex handoff v4 adopted locally
 
 **What:** Promoted `docs/codex-handoff-v4.md` to the active bridge handoff, added the in-repo PropStream UI ground-truth reference and export schema, removed `MONITOR` from the live userscript protocol surface, and aligned docs around export-schema-driven batch skip-trace as the preferred v4 path.
