@@ -63,6 +63,12 @@ function FollowUpRow({ fu }: { fu: FollowUp }) {
         </div>
       </div>
 
+      {complete.isError && (
+        <div style={{ padding: '6px 10px', borderRadius: 4, marginTop: 6, background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 11 }}>
+          Failed: {complete.error instanceof Error ? complete.error.message : String(complete.error)}
+        </div>
+      )}
+
       {fu.notes && <div style={{ color: '#555', fontSize: 11, marginTop: 6 }}>{fu.notes}</div>}
 
       {showOutcome && (
@@ -74,9 +80,10 @@ function FollowUpRow({ fu }: { fu: FollowUp }) {
               disabled={complete.isPending}
               style={{
                 padding: '4px 10px', borderRadius: 4, border: 'none',
-                background: o.color + '18', color: o.color, fontSize: 11, fontWeight: 600, cursor: 'pointer',
+                background: complete.isPending ? o.color + '30' : o.color + '18', color: o.color,
+                fontSize: 11, fontWeight: 600, cursor: 'pointer', opacity: complete.isPending ? 0.6 : 1,
               }}
-            >{o.label}</button>
+            >{complete.isPending ? '...' : o.label}</button>
           ))}
           <button
             onClick={() => setShowOutcome(false)}
@@ -227,6 +234,11 @@ export function KpiApp() {
             >
               {createFollowUp.isPending ? 'Saving...' : 'Schedule Follow-Up'}
             </button>
+            {createFollowUp.isError && (
+              <div style={{ padding: '6px 10px', borderRadius: 4, marginTop: 8, background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 11 }}>
+                Failed: {createFollowUp.error instanceof Error ? createFollowUp.error.message : String(createFollowUp.error)}
+              </div>
+            )}
           </div>
         )}
 

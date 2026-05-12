@@ -97,8 +97,13 @@ function NoteInput({ leadId }: { leadId: string }) {
           fontSize: 12, cursor: 'pointer',
         }}
       >
-        Save Note
+        {addNote.isPending ? 'Saving...' : 'Save Note'}
       </button>
+      {addNote.isError && (
+        <div style={{ padding: '6px 10px', borderRadius: 4, marginTop: 6, background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 11 }}>
+          Failed: {addNote.error instanceof Error ? addNote.error.message : String(addNote.error)}
+        </div>
+      )}
     </div>
   )
 }
@@ -149,18 +154,30 @@ function LeadWorkbench({ lead }: { lead: any }) {
           </button>
           <button
             onClick={() => updateStatus.mutate('under_contract')}
-            style={{ padding: '6px 12px', borderRadius: 4, border: 'none', background: '#22c55e', color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
+            disabled={updateStatus.isPending}
+            style={{ padding: '6px 12px', borderRadius: 4, border: 'none', background: updateStatus.isPending ? '#16a34a' : '#22c55e', color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer', opacity: updateStatus.isPending ? 0.7 : 1 }}
           >
-            Under Contract
+            {updateStatus.isPending ? 'Updating...' : 'Under Contract'}
           </button>
           <button
             onClick={() => updateStatus.mutate('dead')}
-            style={{ padding: '6px 12px', borderRadius: 4, border: 'none', background: '#ef4444', color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
+            disabled={updateStatus.isPending}
+            style={{ padding: '6px 12px', borderRadius: 4, border: 'none', background: updateStatus.isPending ? '#dc2626' : '#ef4444', color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer', opacity: updateStatus.isPending ? 0.7 : 1 }}
           >
-            Dead
+            {updateStatus.isPending ? 'Updating...' : 'Dead'}
           </button>
         </div>
       </div>
+
+      {(updateStatus.isError || scheduleFollowUp.isError) && (
+        <div style={{
+          padding: '8px 14px', borderRadius: 6, marginBottom: 12,
+          background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
+        }}>
+          {updateStatus.isError && `Status update failed: ${updateStatus.error instanceof Error ? updateStatus.error.message : String(updateStatus.error)}`}
+          {scheduleFollowUp.isError && `Follow-up failed: ${scheduleFollowUp.error instanceof Error ? scheduleFollowUp.error.message : String(scheduleFollowUp.error)}`}
+        </div>
+      )}
 
       {showFollowUp && (
         <div style={{

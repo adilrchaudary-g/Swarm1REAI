@@ -4,6 +4,7 @@ import { hermesClient } from '../../../api/hermes-client'
 import { SocialBanditPanel } from './SocialBanditPanel'
 import { WaterShutoffPanel } from './WaterShutoffPanel'
 import { FsboPanel } from './FsboPanel'
+import { CourtRecordsPanel } from './CourtRecordsPanel'
 
 const PORTALS = [
   { id: 'cincinnati_oh', name: 'Cincinnati, OH', type: 'Socrata' },
@@ -52,6 +53,15 @@ export function SourcesPanel() {
         </button>
       </div>
 
+      {runPipeline.isError && (
+        <div style={{
+          padding: '10px 14px', borderRadius: 6, marginBottom: 12,
+          background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
+        }}>
+          Pipeline failed: {runPipeline.error instanceof Error ? runPipeline.error.message : String(runPipeline.error)}
+        </div>
+      )}
+
       {error && (
         <div style={{
           padding: 16, background: '#1a1a2e', borderRadius: 8,
@@ -75,6 +85,9 @@ export function SourcesPanel() {
 
       {/* FSBOs */}
       <FsboSection expanded={expanded === 'fsbo'} onToggle={() => toggle('fsbo')} />
+
+      {/* Court Records */}
+      <CourtRecordsSection expanded={expanded === 'court-records'} onToggle={() => toggle('court-records')} />
     </div>
   )
 }
@@ -270,6 +283,54 @@ function FsboSection({ expanded, onToggle }: { expanded: boolean; onToggle: () =
   )
 }
 
+/* ── Court Records (CaseNet) ──────────────────────────────── */
+
+function CourtRecordsSection({ expanded, onToggle }: { expanded: boolean; onToggle: () => void }) {
+  const { data: stats } = useQuery({
+    queryKey: ['court-record-stats'],
+    queryFn: hermesClient.courtRecords.stats,
+    refetchInterval: 30_000,
+  })
+
+  const hasData = stats && stats.total_cases > 0
+
+  return (
+    <div style={{
+      background: '#111118', border: `1px solid ${expanded ? '#6366f140' : '#1e1e2e'}`,
+      borderRadius: 10, padding: 20, marginBottom: 16,
+      transition: 'border-color 0.15s',
+    }}>
+      <SourceCardHeader
+        title="Court Records (CaseNet)"
+        badges={[
+          { label: 'PARTIAL', color: '#f59e0b' },
+          { label: 'BROWSER', color: '#ef4444' },
+        ]}
+        statsRow={hasData ? (
+          <div style={{ display: 'flex', gap: 16, fontSize: 12 }}>
+            <span style={{ color: '#22c55e' }}>{stats.with_property} w/ property</span>
+            <span style={{ color: '#f59e0b' }}>{stats.new_cases} new</span>
+            <span style={{ color: '#6366f1' }}>{stats.ingested_cases} ingested</span>
+          </div>
+        ) : undefined}
+        description="Missouri probate & civil records from Case.net. Cross-references county property appraiser."
+        expanded={expanded}
+        onToggle={onToggle}
+      />
+      {!expanded && hasData && (
+        <div style={{ fontSize: 11, color: '#444', marginTop: 6 }}>
+          {stats.total_cases} cases across {stats.active_counties} active {stats.active_counties === 1 ? 'county' : 'counties'}
+        </div>
+      )}
+      {expanded && (
+        <div style={{ marginTop: 16, borderTop: '1px solid #1e1e2e', paddingTop: 16 }}>
+          <CourtRecordsPanel />
+        </div>
+      )}
+    </div>
+  )
+}
+
 /* ── PropStream ────────────────────────────────────────────── */
 
 function PropStreamCard({ sources }: { sources: { source_id: string; source_name: string; data_quality_tier: string; enabled: boolean; last_run_at: string | null; last_run_status: string | null; last_run_count: number | null }[] }) {
@@ -321,6 +382,14 @@ function PropStreamCard({ sources }: { sources: { source_id: string; source_name
       >
         {runSource.isPending ? 'Running...' : 'Run PropStream Scan'}
       </button>
+      {runSource.isError && (
+        <div style={{
+          padding: '8px 14px', borderRadius: 6, marginTop: 10,
+          background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
+        }}>
+          Scan failed: {runSource.error instanceof Error ? runSource.error.message : String(runSource.error)}
+        </div>
+      )}
     </div>
   )
 }

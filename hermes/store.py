@@ -256,6 +256,7 @@ class HermesStore:
         self,
         *,
         status: str | None = None,
+        exclude_statuses: list[str] | None = None,
         tier: str | None = None,
         source: str | None = None,
         persona: str | None = None,
@@ -268,6 +269,10 @@ class HermesStore:
             if status:
                 clauses.append("l.status = ?")
                 params.append(status)
+            elif exclude_statuses:
+                placeholders = ",".join("?" for _ in exclude_statuses)
+                clauses.append(f"l.status NOT IN ({placeholders})")
+                params.extend(exclude_statuses)
             if tier:
                 clauses.append("l.motivation_tier = ?")
                 params.append(tier)
@@ -349,6 +354,62 @@ class HermesStore:
                 change_status=True,
             )
             return {"status": "ok", "lead_id": lead_id, "from": current, "to": new_status}
+
+    def get_command_queue_status(self) -> dict[str, Any]:
+        """Return summary of the command queue (pending, delivered, by type)."""
+        with self._connect() as conn:
+            row = conn.execute("""
+                SELECT
+                    COUNT(*) as total,
+                    SUM(CASE WHEN delivered_at IS NULL THEN 1 ELSE 0 END) as pending,
+                    SUM(CASE WHEN delivered_at IS NOT NULL THEN 1 ELSE 0 END) as delivered
+                FROM command_queue
+            """).fetchone()
+            by_type = conn.execute("""
+                SELECT
+                    json_extract(raw_json, '$.payload.command_type') as cmd_type,
+                    COUNT(*) as cnt,
+                    SUM(CASE WHEN delivered_at IS NULL THEN 1 ELSE 0 END) as pending
+                FROM command_queue
+                GROUP BY cmd_type
+            """).fetchall()
+            return {
+                "total": row["total"],
+                "pending": row["pending"],
+                "delivered": row["delivered"],
+                "by_type": {r["cmd_type"]: {"total": r["cnt"], "pending": r["pending"]} for r in by_type},
+            }
+
+    def bulk_update_lead_status(
+        self,
+        lead_ids: list[str],
+        new_status: str,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        """Transition multiple leads to a new status in one batch."""
+        if not lead_ids:
+            return {"status": "ok", "updated": 0}
+        updated = 0
+        errors: list[str] = []
+        with self._connect() as conn:
+            for lead_id in lead_ids:
+                current = self._get_lead_status(conn, lead_id)
+                if current is None:
+                    errors.append(f"{lead_id}: not found")
+                    continue
+                self._set_lead_status(
+                    conn,
+                    lead_id=lead_id,
+                    to_status=new_status,
+                    reason=reason or f"Bulk transition to {new_status}",
+                    event_message_id=None,
+                    change_status=True,
+                )
+                updated += 1
+        result: dict[str, Any] = {"status": "ok", "updated": updated, "to": new_status}
+        if errors:
+            result["errors"] = errors
+        return result
 
     def add_lead_note(
         self, lead_id: str, note_type: str, content: str
@@ -1240,12 +1301,32 @@ class HermesStore:
             items = payload.get("items") or []
 
         for item in items:
-            refs = self._upsert_canonical_entities(
+            lane = envelope.get("lane") or "houses"
+            # Try to match existing lead before creating new entities
+            refs = self._resolve_refs_from_property_ref(
                 conn,
-                item=item,
-                lane=envelope.get("lane") or "houses",
-                event_message_id=envelope["message_id"],
+                property_ref=item.get("property_id"),
+                lane=lane,
             )
+            if not refs:
+                refs = self._resolve_refs_by_address(
+                    conn, item=item, lane=lane,
+                )
+            if not refs:
+                refs = self._upsert_canonical_entities(
+                    conn,
+                    item=item,
+                    lane=lane,
+                    event_message_id=envelope["message_id"],
+                )
+            # Attach contact info if present (phones/emails from skip-traced export)
+            if self._item_has_contacts(item):
+                self._upsert_contact_lists(
+                    conn,
+                    owner_id=refs["owner_id"],
+                    item=item,
+                    event_message_id=envelope["message_id"],
+                )
             conn.execute(
                 """
                 UPDATE leads
@@ -1278,16 +1359,21 @@ class HermesStore:
         payload = envelope.get("payload") or {}
         skipped_at = envelope.get("timestamp") or now_iso()
         for item in payload.get("items") or []:
+            lane = envelope.get("lane") or "houses"
             refs = self._resolve_refs_from_property_ref(
                 conn,
                 property_ref=item.get("property_id"),
-                lane=envelope.get("lane") or "houses",
+                lane=lane,
             )
+            if not refs:
+                refs = self._resolve_refs_by_address(
+                    conn, item=item, lane=lane,
+                )
             if not refs:
                 refs = self._upsert_canonical_entities(
                     conn,
                     item=item,
-                    lane=envelope.get("lane") or "houses",
+                    lane=lane,
                     event_message_id=envelope["message_id"],
                 )
             self._upsert_contact_lists(
@@ -1335,16 +1421,24 @@ class HermesStore:
         for summary_item in payload.get("items") or []:
             export_rows = summary_item.get("export_rows") or []
             for item in export_rows:
+                lane = envelope.get("lane") or "houses"
                 refs = self._resolve_refs_from_property_ref(
                     conn,
                     property_ref=item.get("property_id"),
-                    lane=envelope.get("lane") or "houses",
+                    lane=lane,
                 )
+                # Fallback: try matching by street+city+state (handles zip mismatch)
+                if not refs:
+                    refs = self._resolve_refs_by_address(
+                        conn,
+                        item=item,
+                        lane=lane,
+                    )
                 if not refs:
                     refs = self._upsert_canonical_entities(
                         conn,
                         item=item,
-                        lane=envelope.get("lane") or "houses",
+                        lane=lane,
                         event_message_id=envelope["message_id"],
                     )
                 self._upsert_contact_lists(
@@ -1817,6 +1911,60 @@ class HermesStore:
             LIMIT 1
             """,
             (normalized_ref,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def _resolve_refs_by_address(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        item: dict[str, Any],
+        lane: str,
+    ) -> dict[str, str] | None:
+        """Try to match an incoming item to an existing lead by street+city+state.
+
+        This handles the case where code violation leads were created without
+        zip codes but PropStream results include them, causing property_id
+        mismatches.
+        """
+        street = normalize_token(item.get("address_street") or "")
+        city = normalize_token(item.get("address_city") or "")
+        state = normalize_token(item.get("address_state") or "")
+        if not street or not city:
+            return None
+        # Partial property_id match: lane:street-city-state (without zip)
+        partial_id = f"{lane}:{street}-{city}-{state}"
+        row = conn.execute(
+            """
+            SELECT lead_id, property_id, owner_id
+            FROM leads
+            WHERE property_id LIKE ? || '%'
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (partial_id,),
+        ).fetchone()
+        if row:
+            return dict(row)
+        # Also try matching via the properties table directly
+        row = conn.execute(
+            """
+            SELECT l.lead_id, l.property_id, l.owner_id
+            FROM leads l
+            JOIN properties p ON p.property_id = l.property_id
+            WHERE LOWER(REPLACE(p.address_street, ' ', '')) = ?
+              AND LOWER(REPLACE(p.address_city, ' ', '')) = ?
+              AND LOWER(p.address_state) = ?
+              AND p.lane = ?
+            ORDER BY l.updated_at DESC
+            LIMIT 1
+            """,
+            (
+                (item.get("address_street") or "").replace(" ", "").lower(),
+                (item.get("address_city") or "").replace(" ", "").lower(),
+                (item.get("address_state") or "").lower(),
+                lane,
+            ),
         ).fetchone()
         return dict(row) if row else None
 
@@ -3497,6 +3645,356 @@ Sincerely,
 
         self.update_source_run("fsbo", status="success", count=leads_created)
         return {"status": "ok", "ingested": len(listings), "leads_created": leads_created}
+
+    # ── Court Records (CaseNet) ──────────────────────────────────────
+
+    def _ensure_court_record_tables(self, conn: sqlite3.Connection) -> None:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS court_record_counties (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              county TEXT NOT NULL,
+              state TEXT NOT NULL DEFAULT 'MO',
+              court_id TEXT NOT NULL,
+              appraiser_url TEXT,
+              appraiser_type TEXT,
+              active INTEGER NOT NULL DEFAULT 1,
+              last_scraped_at TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              UNIQUE(county, state)
+            );
+
+            CREATE TABLE IF NOT EXISTS court_record_cases (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              county_id INTEGER,
+              case_number TEXT NOT NULL,
+              court_id TEXT NOT NULL,
+              case_type TEXT NOT NULL DEFAULT 'Probate',
+              file_date TEXT,
+              case_title TEXT,
+              deceased_name TEXT,
+              pr_name TEXT,
+              pr_address TEXT,
+              pr_role TEXT,
+              property_address TEXT,
+              property_city TEXT,
+              property_state TEXT,
+              property_zip TEXT,
+              apn TEXT,
+              assessed_value REAL,
+              market_value REAL,
+              match_confidence TEXT,
+              case_url TEXT,
+              case_hash TEXT NOT NULL,
+              lead_id TEXT,
+              status TEXT NOT NULL DEFAULT 'new',
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              UNIQUE(case_hash),
+              FOREIGN KEY (county_id) REFERENCES court_record_counties(id) ON DELETE SET NULL
+            );
+            """
+        )
+
+    def court_record_stats(self) -> dict[str, Any]:
+        with self._connect() as conn:
+            self._ensure_court_record_tables(conn)
+            total = conn.execute("SELECT COUNT(*) AS c FROM court_record_cases").fetchone()["c"]
+            new = conn.execute("SELECT COUNT(*) AS c FROM court_record_cases WHERE status = 'new'").fetchone()["c"]
+            qualified = conn.execute(
+                "SELECT COUNT(*) AS c FROM court_record_cases WHERE status = 'qualified'"
+            ).fetchone()["c"]
+            ingested = conn.execute(
+                "SELECT COUNT(*) AS c FROM court_record_cases WHERE status = 'ingested'"
+            ).fetchone()["c"]
+            with_property = conn.execute(
+                "SELECT COUNT(*) AS c FROM court_record_cases WHERE property_address IS NOT NULL AND property_address != ''"
+            ).fetchone()["c"]
+            total_counties = conn.execute("SELECT COUNT(*) AS c FROM court_record_counties").fetchone()["c"]
+            active_counties = conn.execute(
+                "SELECT COUNT(*) AS c FROM court_record_counties WHERE active = 1"
+            ).fetchone()["c"]
+            by_county = {
+                r["court_id"]: r["c"]
+                for r in conn.execute(
+                    "SELECT court_id, COUNT(*) AS c FROM court_record_cases GROUP BY court_id"
+                ).fetchall()
+            }
+            return {
+                "total_cases": total,
+                "new_cases": new,
+                "qualified_cases": qualified,
+                "ingested_cases": ingested,
+                "with_property": with_property,
+                "total_counties": total_counties,
+                "active_counties": active_counties,
+                "by_county": by_county,
+            }
+
+    def list_court_record_counties(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            self._ensure_court_record_tables(conn)
+            rows = conn.execute(
+                """
+                SELECT c.*,
+                  (SELECT COUNT(*) FROM court_record_cases cr WHERE cr.county_id = c.id) AS case_count,
+                  (SELECT COUNT(*) FROM court_record_cases cr WHERE cr.county_id = c.id AND cr.status = 'ingested') AS ingested_count
+                FROM court_record_counties c
+                ORDER BY c.county ASC
+                """,
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def upsert_court_record_county(
+        self, county: str, state: str, court_id: str,
+        appraiser_url: str | None = None, appraiser_type: str | None = None,
+    ) -> dict[str, Any]:
+        timestamp = now_iso()
+        with self._connect() as conn:
+            self._ensure_court_record_tables(conn)
+            existing = conn.execute(
+                "SELECT id FROM court_record_counties WHERE county = ? AND state = ?",
+                (county, state),
+            ).fetchone()
+            if existing:
+                sets = ["updated_at = ?"]
+                params: list[Any] = [timestamp]
+                if court_id:
+                    sets.append("court_id = ?")
+                    params.append(court_id)
+                if appraiser_url is not None:
+                    sets.append("appraiser_url = ?")
+                    params.append(appraiser_url)
+                if appraiser_type is not None:
+                    sets.append("appraiser_type = ?")
+                    params.append(appraiser_type)
+                params.append(existing["id"])
+                conn.execute(f"UPDATE court_record_counties SET {', '.join(sets)} WHERE id = ?", params)
+                return {"status": "ok", "id": existing["id"], "action": "updated"}
+            else:
+                cur = conn.execute(
+                    """
+                    INSERT INTO court_record_counties (county, state, court_id, appraiser_url, appraiser_type, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (county, state, court_id, appraiser_url, appraiser_type, timestamp, timestamp),
+                )
+                return {"status": "ok", "id": cur.lastrowid, "action": "created"}
+
+    def toggle_court_record_county(self, county_id: int, active: bool) -> dict[str, Any]:
+        with self._connect() as conn:
+            self._ensure_court_record_tables(conn)
+            conn.execute(
+                "UPDATE court_record_counties SET active = ?, updated_at = ? WHERE id = ?",
+                (1 if active else 0, now_iso(), county_id),
+            )
+            return {"status": "ok"}
+
+    def import_court_record_cases(
+        self, cases: list[dict[str, Any]], county_id: int | None = None,
+    ) -> dict[str, Any]:
+        import hashlib
+
+        timestamp = now_iso()
+        imported = 0
+        duplicates = 0
+
+        with self._connect() as conn:
+            self._ensure_court_record_tables(conn)
+
+            for case in cases:
+                case_number = (case.get("case_number") or "").strip()
+                court_id = (case.get("court_id") or "").strip()
+                if not case_number:
+                    continue
+
+                case_hash = hashlib.sha256(
+                    f"{court_id}:{case_number}".encode()
+                ).hexdigest()[:16]
+
+                existing = conn.execute(
+                    "SELECT id FROM court_record_cases WHERE case_hash = ?",
+                    (case_hash,),
+                ).fetchone()
+                if existing:
+                    duplicates += 1
+                    continue
+
+                conn.execute(
+                    """
+                    INSERT INTO court_record_cases (
+                      county_id, case_number, court_id, case_type, file_date,
+                      case_title, deceased_name, pr_name, pr_address, pr_role,
+                      property_address, property_city, property_state, property_zip,
+                      apn, assessed_value, market_value, match_confidence,
+                      case_url, case_hash, status, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)
+                    """,
+                    (
+                        county_id,
+                        case_number,
+                        court_id,
+                        case.get("case_type", "Probate"),
+                        case.get("file_date"),
+                        case.get("case_title"),
+                        case.get("deceased_name"),
+                        case.get("pr_name"),
+                        case.get("pr_address"),
+                        case.get("pr_role"),
+                        case.get("property_address"),
+                        case.get("property_city"),
+                        case.get("property_state"),
+                        case.get("property_zip"),
+                        case.get("apn"),
+                        case.get("assessed_value"),
+                        case.get("market_value"),
+                        case.get("match_confidence"),
+                        case.get("case_url"),
+                        case_hash,
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+                imported += 1
+
+            if county_id:
+                conn.execute(
+                    "UPDATE court_record_counties SET last_scraped_at = ?, updated_at = ? WHERE id = ?",
+                    (timestamp, timestamp, county_id),
+                )
+
+        return {"status": "ok", "imported": imported, "duplicates": duplicates}
+
+    def list_court_record_cases(
+        self,
+        status: str | None = None,
+        county_id: int | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            self._ensure_court_record_tables(conn)
+            clauses = []
+            params: list[Any] = []
+            if status:
+                clauses.append("cr.status = ?")
+                params.append(status)
+            if county_id:
+                clauses.append("cr.county_id = ?")
+                params.append(county_id)
+            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+            params.append(limit)
+            rows = conn.execute(
+                f"""
+                SELECT cr.*,
+                  cc.county AS county_name
+                FROM court_record_cases cr
+                LEFT JOIN court_record_counties cc ON cc.id = cr.county_id
+                {where}
+                ORDER BY cr.created_at DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def classify_court_record_case(
+        self, case_id: int, status: str, notes: str | None = None,
+    ) -> dict[str, Any]:
+        with self._connect() as conn:
+            self._ensure_court_record_tables(conn)
+            conn.execute(
+                "UPDATE court_record_cases SET status = ?, updated_at = ? WHERE id = ?",
+                (status, now_iso(), case_id),
+            )
+            return {"status": "ok"}
+
+    def bulk_classify_court_record_cases(
+        self, case_ids: list[int], status: str,
+    ) -> dict[str, Any]:
+        with self._connect() as conn:
+            self._ensure_court_record_tables(conn)
+            placeholders = ",".join("?" for _ in case_ids)
+            conn.execute(
+                f"UPDATE court_record_cases SET status = ?, updated_at = ? WHERE id IN ({placeholders})",
+                [status, now_iso()] + case_ids,
+            )
+            return {"status": "ok", "updated": len(case_ids)}
+
+    def ingest_court_record_cases(self, case_ids: list[int]) -> dict[str, Any]:
+        import uuid
+
+        with self._connect() as conn:
+            self._ensure_court_record_tables(conn)
+            placeholders = ",".join("?" for _ in case_ids)
+            rows = conn.execute(
+                f"SELECT * FROM court_record_cases WHERE id IN ({placeholders}) AND status IN ('qualified', 'new')",
+                case_ids,
+            ).fetchall()
+            cases = [dict(r) for r in rows]
+
+        leads_created = 0
+        for rec in cases:
+            pr_name = (rec.get("pr_name") or "").strip()
+            prop_addr = (rec.get("property_address") or "").strip()
+            city = (rec.get("property_city") or "").strip()
+            state = (rec.get("property_state") or "MO").strip()
+            zipcode = (rec.get("property_zip") or "").strip()
+
+            if not prop_addr and not pr_name:
+                continue
+
+            full = ", ".join(p for p in [prop_addr, city, state, zipcode] if p) or pr_name
+            distress = ["probate_filed"] if rec.get("case_type") == "Probate" else ["civil_lien_filed"]
+
+            item = {
+                "property_id": rec.get("apn") or full,
+                "address_full": full,
+                "address_street": prop_addr,
+                "address_city": city,
+                "address_state": state,
+                "address_zip": zipcode,
+                "owner_name": pr_name,
+                "mailing_address": rec.get("pr_address") or "",
+                "distress_signals": distress,
+                "source": "court_records",
+                "source_metadata": json_dumps({
+                    "case_number": rec.get("case_number"),
+                    "deceased_name": rec.get("deceased_name"),
+                    "case_type": rec.get("case_type"),
+                    "file_date": rec.get("file_date"),
+                    "case_url": rec.get("case_url"),
+                    "pr_role": rec.get("pr_role"),
+                    "assessed_value": rec.get("assessed_value"),
+                }),
+            }
+
+            envelope = {
+                "message_id": f"court-{rec['id']}-{uuid.uuid4().hex[:8]}",
+                "type": "event",
+                "lane": "houses",
+                "timestamp": now_iso(),
+                "payload": {
+                    "command_type": "EXPORT",
+                    "status": "success",
+                    "items": [item],
+                    "source_type": "court_records",
+                    "list_name": f"Court Records — {rec.get('court_id', '')}",
+                    "record_count": 1,
+                },
+            }
+            self.ingest_envelope(envelope)
+            leads_created += 1
+
+            with self._connect() as conn:
+                self._ensure_court_record_tables(conn)
+                conn.execute(
+                    "UPDATE court_record_cases SET status = 'ingested', lead_id = ?, updated_at = ? WHERE id = ?",
+                    (full, now_iso(), rec["id"]),
+                )
+
+        self.update_source_run("court_records", status="success", count=leads_created)
+        return {"status": "ok", "ingested": len(cases), "leads_created": leads_created}
 
     def _parse_export_csv(self, text: str) -> list[dict[str, str]]:
         if not text.strip():

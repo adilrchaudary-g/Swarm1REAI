@@ -303,3 +303,71 @@ export interface FsboStats {
   active_markets: number
   by_state: Record<string, number>
 }
+
+export type CourtRecordCaseStatus = 'new' | 'qualified' | 'junk' | 'ingested'
+
+export interface CourtRecordCounty {
+  id: number
+  county: string
+  state: string
+  court_id: string
+  appraiser_url: string | null
+  appraiser_type: string | null
+  active: number
+  last_scraped_at: string | null
+  created_at: string
+  updated_at: string
+  case_count: number
+  ingested_count: number
+}
+
+export interface CourtRecordCase {
+  id: number
+  county_id: number | null
+  case_number: string
+  court_id: string
+  case_type: string
+  file_date: string | null
+  case_title: string | null
+  deceased_name: string | null
+  pr_name: string | null
+  pr_address: string | null
+  pr_role: string | null
+  property_address: string | null
+  property_city: string | null
+  property_state: string | null
+  property_zip: string | null
+  apn: string | null
+  assessed_value: number | null
+  market_value: number | null
+  match_confidence: string | null
+  case_url: string | null
+  case_hash: string
+  lead_id: string | null
+  status: CourtRecordCaseStatus
+  created_at: string
+  updated_at: string
+  county_name: string | null
+}
+
+export interface CourtRecordStats {
+  total_cases: number
+  new_cases: number
+  qualified_cases: number
+  ingested_cases: number
+  with_property: number
+  total_counties: number
+  active_counties: number
+  by_county: Record<string, number>
+}
+
+export interface CourtRecordScrapeStatus {
+  running: boolean
+  job_id: string | null
+  log_lines: string[]
+  started_at: string | null
+  completed_at: string | null
+  result: Record<string, unknown> | null
+  error: string | null
+  phase: string
+}

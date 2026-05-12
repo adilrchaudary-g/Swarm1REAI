@@ -219,31 +219,31 @@ function ListingsView() {
                 disabled={bulkClassify.isPending}
                 style={{
                   padding: '5px 12px', borderRadius: 4, border: '1px solid #22c55e40',
-                  background: '#22c55e15', color: '#22c55e', fontSize: 11, cursor: 'pointer',
+                  background: bulkClassify.isPending ? '#22c55e30' : '#22c55e15', color: '#22c55e', fontSize: 11, cursor: 'pointer',
                 }}
               >
-                Qualify {selectedIds.size}
+                {bulkClassify.isPending ? 'Qualifying...' : `Qualify ${selectedIds.size}`}
               </button>
               <button
                 onClick={() => bulkClassify.mutate('junk')}
                 disabled={bulkClassify.isPending}
                 style={{
                   padding: '5px 12px', borderRadius: 4, border: '1px solid #ef444440',
-                  background: '#ef444415', color: '#ef4444', fontSize: 11, cursor: 'pointer',
+                  background: bulkClassify.isPending ? '#ef444430' : '#ef444415', color: '#ef4444', fontSize: 11, cursor: 'pointer',
                 }}
               >
-                Junk {selectedIds.size}
+                {bulkClassify.isPending ? 'Junking...' : `Junk ${selectedIds.size}`}
               </button>
               <button
                 onClick={() => ingestListings.mutate()}
                 disabled={ingestListings.isPending}
                 style={{
                   padding: '5px 12px', borderRadius: 5, border: 'none',
-                  background: '#6366f1', color: '#fff', fontSize: 11,
+                  background: ingestListings.isPending ? '#4f46e5' : '#6366f1', color: '#fff', fontSize: 11,
                   fontWeight: 600, cursor: 'pointer',
                 }}
               >
-                Ingest {selectedIds.size}
+                {ingestListings.isPending ? 'Ingesting...' : `Ingest ${selectedIds.size}`}
               </button>
             </>
           )}
@@ -262,6 +262,18 @@ function ListingsView() {
           )}
         </div>
       </div>
+
+      {(ingestListings.isError || ingestAll.isError || bulkClassify.isError || classifyListing.isError) && (
+        <div style={{
+          padding: '10px 14px', borderRadius: 6, marginBottom: 12,
+          background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
+        }}>
+          {ingestListings.isError && `Ingest failed: ${ingestListings.error instanceof Error ? ingestListings.error.message : String(ingestListings.error)}`}
+          {ingestAll.isError && `Ingest all failed: ${ingestAll.error instanceof Error ? ingestAll.error.message : String(ingestAll.error)}`}
+          {bulkClassify.isError && `Classify failed: ${bulkClassify.error instanceof Error ? bulkClassify.error.message : String(bulkClassify.error)}`}
+          {classifyListing.isError && `Classify failed: ${classifyListing.error instanceof Error ? classifyListing.error.message : String(classifyListing.error)}`}
+        </div>
+      )}
 
       {ingestResult && (
         <div style={{
@@ -295,6 +307,7 @@ function ListingsView() {
               onToggleSelect={() => toggleId(lst.id)}
               onToggleExpand={() => setExpandedId(expandedId === lst.id ? null : lst.id)}
               onClassify={(status) => classifyListing.mutate({ id: lst.id, status })}
+              classifyPending={classifyListing.isPending}
             />
           ))}
         </div>
@@ -310,6 +323,7 @@ function ListingCard({
   onToggleSelect,
   onToggleExpand,
   onClassify,
+  classifyPending,
 }: {
   listing: FsboListing
   selected: boolean
@@ -317,6 +331,7 @@ function ListingCard({
   onToggleSelect: () => void
   onToggleExpand: () => void
   onClassify: (status: string) => void
+  classifyPending?: boolean
 }) {
   const scoreColor = distressColor(lst.distress_score)
   let flags: string[] = []
@@ -431,15 +446,16 @@ function ListingCard({
 
         {/* Quick actions */}
         {lst.status !== 'ingested' && (
-          <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+          <div style={{ display: 'flex', gap: 4, flexShrink: 0, opacity: classifyPending ? 0.5 : 1, transition: 'opacity 0.15s' }}>
             {lst.status !== 'qualified' && (
               <button
                 onClick={() => onClassify('qualified')}
+                disabled={classifyPending}
                 title="Qualify"
                 style={{
                   width: 28, height: 28, borderRadius: 4, border: '1px solid #22c55e30',
                   background: '#22c55e10', color: '#22c55e', fontSize: 14,
-                  cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  cursor: classifyPending ? 'wait' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
                 }}
               >
                 +
@@ -448,11 +464,12 @@ function ListingCard({
             {lst.status !== 'junk' && (
               <button
                 onClick={() => onClassify('junk')}
+                disabled={classifyPending}
                 title="Mark junk"
                 style={{
                   width: 28, height: 28, borderRadius: 4, border: '1px solid #ef444430',
                   background: '#ef444410', color: '#ef4444', fontSize: 14,
-                  cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  cursor: classifyPending ? 'wait' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
                 }}
               >
                 x
@@ -751,6 +768,15 @@ function ImportView() {
           </div>
         </div>
 
+        {importListings.isError && (
+          <div style={{
+            padding: '10px 14px', borderRadius: 6, marginBottom: 14,
+            background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
+          }}>
+            Import failed: {importListings.error instanceof Error ? importListings.error.message : String(importListings.error)}
+          </div>
+        )}
+
         {importResult && (
           <div style={{
             padding: '10px 14px', borderRadius: 6, marginBottom: 14,
@@ -948,6 +974,16 @@ function MarketsView() {
       </div>
 
       {/* Active markets */}
+      {(upsertMarket.isError || toggleMarket.isError) && (
+        <div style={{
+          padding: '8px 14px', borderRadius: 6, marginBottom: 12,
+          background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
+        }}>
+          {upsertMarket.isError && `Add market failed: ${upsertMarket.error instanceof Error ? upsertMarket.error.message : String(upsertMarket.error)}`}
+          {toggleMarket.isError && `Toggle failed: ${toggleMarket.error instanceof Error ? toggleMarket.error.message : String(toggleMarket.error)}`}
+        </div>
+      )}
+
       {markets && markets.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 20 }}>
           {markets.map((m) => (
@@ -992,15 +1028,17 @@ function MarketsView() {
                   )}
                   <button
                     onClick={() => toggleMarket.mutate({ id: m.id, active: !m.active })}
+                    disabled={toggleMarket.isPending}
                     style={{
                       padding: '4px 10px', borderRadius: 4, fontSize: 11,
                       border: `1px solid ${m.active ? '#ef444430' : '#22c55e30'}`,
                       background: m.active ? '#ef444410' : '#22c55e10',
                       color: m.active ? '#ef4444' : '#22c55e',
-                      cursor: 'pointer',
+                      cursor: toggleMarket.isPending ? 'wait' : 'pointer',
+                      opacity: toggleMarket.isPending ? 0.5 : 1,
                     }}
                   >
-                    {m.active ? 'Disable' : 'Enable'}
+                    {toggleMarket.isPending ? '...' : m.active ? 'Disable' : 'Enable'}
                   </button>
                 </div>
               </div>

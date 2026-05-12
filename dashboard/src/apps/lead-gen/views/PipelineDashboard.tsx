@@ -119,9 +119,10 @@ export function PipelineDashboard() {
 
       {runOutput && (
         <div style={{
-          padding: 12, background: '#1a2e1a', borderRadius: 6,
-          border: '1px solid #2a3e2a', marginBottom: 16,
-          fontSize: 12, color: '#4ade80',
+          padding: 12, borderRadius: 6, marginBottom: 16, fontSize: 12,
+          background: runOutput.startsWith('Error:') ? '#1f0f0f' : '#1a2e1a',
+          border: `1px solid ${runOutput.startsWith('Error:') ? '#3a1a1a' : '#2a3e2a'}`,
+          color: runOutput.startsWith('Error:') ? '#ef4444' : '#4ade80',
         }}>
           {runOutput}
           <button

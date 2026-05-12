@@ -479,6 +479,230 @@ async function main() {
     return;
   }
 
+  if (command === "import-skip-trace") {
+    const csvPathArg = process.argv[3];
+    const listNameArg = process.argv[4] || `swarm-code-violations-${new Date().toISOString().slice(0, 10)}`;
+    const hermesUrl = process.env.HERMES_BASE_URL || "http://localhost:8765";
+
+    if (!csvPathArg) {
+      throw new Error(
+        "Usage: npm start -- import-skip-trace <csvPath> [listName]\n" +
+        "  csvPath: Path to CSV with Address,City,State,Zip columns\n" +
+        "  listName: Name for PropStream marketing list (default: swarm-code-violations-YYYY-MM-DD)"
+      );
+    }
+
+    const csvPath = path.resolve(csvPathArg);
+    if (!fs.existsSync(csvPath)) {
+      throw new Error(`CSV file not found: ${csvPath}`);
+    }
+    const csvContent = fs.readFileSync(csvPath, "utf8");
+    const csvLines = csvContent.split("\n").filter(l => l.trim()).length - 1;
+    console.log(`\n=== IMPORT-SKIP-TRACE PIPELINE ===`);
+    console.log(`CSV: ${csvPath} (${csvLines} addresses)`);
+    console.log(`List: ${listNameArg}`);
+
+    const interactiveConfig = { ...config, headless: false };
+    const runner = await PropStreamRunner.create(interactiveConfig);
+    await runner.waitForManualSearchReady();
+
+    // Phase 1: Import CSV into PropStream as a marketing list
+    console.log(`\n--- PHASE 1: Import CSV to PropStream ---`);
+    try {
+      const importResult = await runner.importCsvToList(csvPath, listNameArg);
+      console.log(`Imported: ${importResult.imported} records to list "${importResult.listName}"`);
+    } catch (error) {
+      console.error(`Import failed: ${error instanceof Error ? error.message : String(error)}`);
+      console.log(`Continuing anyway - the list may have been partially created...`);
+    }
+
+    // Phase 2: Wait for PropStream to process the import
+    const waitSec = csvLines >= 1000 ? 120 : csvLines >= 500 ? 60 : 30;
+    console.log(`\n--- PHASE 2: Waiting ${waitSec}s for PropStream to process import ---`);
+    await new Promise(r => setTimeout(r, waitSec * 1000));
+
+    // Phase 3: Skip trace the imported list
+    console.log(`\n--- PHASE 3: Skip Trace ---`);
+    try {
+      await runner.skipTraceList(listNameArg, csvLines);
+      console.log(`Skip trace order placed for "${listNameArg}"`);
+    } catch (error) {
+      console.error(`Skip trace failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    // Check balance
+    const balance = await runner.checkSkipTraceBalance();
+    console.log(`[BALANCE] Skip traces remaining: ${balance.skip_trace ?? "unknown"} | Saves: ${balance.saves ?? "unknown"} | Exports: ${balance.exports ?? "unknown"}`);
+
+    // Phase 4: Export the skip-traced list
+    console.log(`\n--- PHASE 4: Export skip-traced results ---`);
+    const { mkdir } = await import("node:fs/promises");
+    const archiveRoot = config.harvestArchiveRoot;
+    const date = new Date().toISOString().slice(0, 10);
+    const exportDir = path.join(archiveRoot, "code-violations-skip-trace", date);
+    await mkdir(exportDir, { recursive: true });
+    const exportPath = path.join(exportDir, `${listNameArg}.csv`);
+
+    try {
+      const csvResult = await runner.exportListCsv(listNameArg, exportPath);
+      console.log(`Exported ${csvResult.rows} rows to ${csvResult.path}`);
+    } catch (error) {
+      console.error(`Export failed: ${error instanceof Error ? error.message : String(error)}`);
+
+      // Try to get CSV from lastExportCsv (captured during skipTraceBatch)
+      const lastCsv = runner.lastExportCsv;
+      if (lastCsv) {
+        const { writeFile: wf } = await import("node:fs/promises");
+        await wf(exportPath, lastCsv, "utf8");
+        const rows = lastCsv.split("\n").filter((l: string) => l.trim()).length - 1;
+        console.log(`Recovered ${rows} rows from skip trace export cache`);
+      }
+    }
+
+    // Phase 5: Ingest results back to Hermes
+    console.log(`\n--- PHASE 5: Ingest results to Hermes ---`);
+    if (fs.existsSync(exportPath)) {
+      try {
+        const resp = await fetch(`${hermesUrl}/api/skip-trace/ingest-csv`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        const result = await resp.json();
+        console.log(`Hermes ingest result:`, JSON.stringify(result, null, 2));
+      } catch (error) {
+        console.error(`Hermes ingest failed: ${error instanceof Error ? error.message : String(error)}`);
+        console.log(`The exported CSV is available at: ${exportPath}`);
+        console.log(`You can manually trigger ingest via: curl -X POST ${hermesUrl}/api/skip-trace/ingest-csv`);
+      }
+    } else {
+      console.log(`No export file found. Skip trace may still be processing.`);
+      console.log(`Try re-exporting later: npm start -- reexport ${listNameArg} ${exportDir}`);
+    }
+
+    console.log(`\n=== PIPELINE COMPLETE ===`);
+    await runner.shutdown();
+    return;
+  }
+
+  if (command === "court-records") {
+    const county = process.argv[3];
+    const caseType = (process.argv[4] || "Probate") as "Probate" | "Civil" | "All";
+    const daysBack = Number(process.argv[5] || "7");
+    if (!county) {
+      throw new Error(
+        "Usage: npm start -- court-records <county> [caseType] [daysBack]\n" +
+        "  county: Court ID / county name (e.g. 'Greene')\n" +
+        "  caseType: Probate | Civil | All (default: Probate)\n" +
+        "  daysBack: Number of days back to search (default: 7)",
+      );
+    }
+
+    const { CaseNetClient } = await import("./acquisition/casenet-client.js");
+    const { PropertyAppraiserClient } = await import("./acquisition/property-appraiser-client.js");
+    const { BrowserSession } = await import("./browser/session.js");
+    const { mkdir, writeFile } = await import("node:fs/promises");
+
+    const interactiveConfig = { ...config, headless: false };
+    const browser = new BrowserSession(interactiveConfig);
+    const caseNet = new CaseNetClient(browser, interactiveConfig);
+    const appraiser = new PropertyAppraiserClient(browser);
+
+    console.log(`\n=== COURT RECORDS SCRAPER ===`);
+    console.log(`County: ${county} | Case type: ${caseType} | Days back: ${daysBack}`);
+
+    await caseNet.waitForCaseNetReady();
+
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - daysBack);
+    const fmt = (d: Date) => `${(d.getMonth() + 1).toString().padStart(2, "0")}/${d.getDate().toString().padStart(2, "0")}/${d.getFullYear()}`;
+
+    console.log(`\nSearching ${fmt(startDate)} → ${fmt(endDate)}...`);
+    const cases = await caseNet.searchByFilingDate({
+      courtId: county,
+      caseType,
+      startDate: fmt(startDate),
+      endDate: fmt(endDate),
+    });
+
+    console.log(`\nFound ${cases.length} cases. Cross-referencing with property appraiser...`);
+
+    const csvRows: string[] = [
+      "case_number,court_id,case_type,file_date,deceased_name,pr_name,pr_address,pr_role,property_address,property_city,property_state,property_zip,apn,assessed_value,market_value,match_confidence,case_url",
+    ];
+
+    for (const c of cases) {
+      let propAddr = "";
+      let propCity = "";
+      let propState = "MO";
+      let propZip = "";
+      let apn = "";
+      let assessed = "";
+      let market = "";
+      let confidence = "";
+
+      if (c.deceasedName) {
+        const props = await appraiser.searchByOwnerName(c.deceasedName, county, "MO");
+        if (props.length > 0) {
+          const best = props[0];
+          propAddr = best.address;
+          propCity = best.city;
+          propState = best.state;
+          propZip = best.zip;
+          apn = best.apn;
+          assessed = best.assessedValue?.toString() || "";
+          market = best.marketValue?.toString() || "";
+          confidence = best.matchConfidence;
+          console.log(`  ✓ ${c.deceasedName} → ${best.address} (${best.matchConfidence})`);
+        } else {
+          console.log(`  ✗ ${c.deceasedName} — no property found`);
+        }
+      }
+
+      const esc = (s: string | null) => `"${(s || "").replace(/"/g, '""')}"`;
+      csvRows.push(
+        [
+          esc(c.caseNumber), esc(c.courtId), esc(c.caseType), esc(c.fileDate),
+          esc(c.deceasedName), esc(c.personalRepresentative?.name || ""),
+          esc(c.personalRepresentative?.address || ""), esc(c.personalRepresentative?.role || ""),
+          esc(propAddr), esc(propCity), esc(propState), esc(propZip),
+          esc(apn), assessed, market, confidence, esc(c.caseUrl),
+        ].join(","),
+      );
+
+      await new Promise((r) => setTimeout(r, 1_500 + Math.random() * 500));
+    }
+
+    const date = new Date().toISOString().slice(0, 10);
+    const countySlug = county.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/-+$/, "");
+    const outputDir = path.join(config.courtRecordsArchiveRoot, countySlug, date);
+    await mkdir(outputDir, { recursive: true });
+
+    const csvPath = path.join(outputDir, "court-records.csv");
+    await writeFile(csvPath, csvRows.join("\n"), "utf8");
+
+    const manifest = {
+      harvest_date: date,
+      county,
+      state: "MO",
+      case_type: caseType,
+      days_back: daysBack,
+      source: "CaseNet",
+      total_cases: cases.length,
+      with_property: csvRows.length - 1 - cases.filter((c) => !c.deceasedName).length,
+    };
+    await writeFile(path.join(outputDir, "manifest.json"), JSON.stringify(manifest, null, 2));
+
+    console.log(`\n=== COMPLETE ===`);
+    console.log(`Cases found: ${cases.length}`);
+    console.log(`CSV: ${csvPath}`);
+    console.log(`Manifest: ${outputDir}/manifest.json`);
+
+    await browser.close();
+    return;
+  }
+
   if (command === "benchmark-sessions") {
     const results = await runBenchmark(config);
     console.log("\n" + JSON.stringify(results, null, 2));

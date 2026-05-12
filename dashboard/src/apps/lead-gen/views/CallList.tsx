@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { hermesClient } from '../../../api/hermes-client'
 import { useLeadStore } from '../../../store/lead-store'
@@ -32,29 +32,48 @@ const btnBase = {
   cursor: 'pointer', padding: '5px 10px',
 }
 
-function LeadRow({ lead, index, isActive }: { lead: Lead; index: number; isActive: boolean }) {
+function LeadRow({
+  lead,
+  index,
+  isActive,
+  isSelected,
+  onToggleSelect,
+}: {
+  lead: Lead
+  index: number
+  isActive: boolean
+  isSelected: boolean
+  onToggleSelect: (leadId: string) => void
+}) {
   const setActiveLead = useLeadStore((s) => s.setActiveLead)
   const tier = lead.motivation_tier || ''
   const tierColor = TIER_COLORS[tier] || '#666'
 
   return (
     <tr
-      onClick={() => setActiveLead(lead)}
       style={{
         cursor: 'pointer',
         borderBottom: '1px solid #1e1e2e',
-        background: isActive ? '#1a1a2e' : 'transparent',
+        background: isActive ? '#1a1a2e' : isSelected ? '#16163a' : 'transparent',
       }}
     >
-      <td style={{ padding: '10px 12px', color: '#ccc', fontSize: 13 }}>{index + 1}</td>
-      <td style={{ padding: '10px 12px', color: '#e0e0e0', fontSize: 13 }}>
+      <td style={{ padding: '10px 8px', textAlign: 'center' }}>
+        <input
+          type="checkbox"
+          checked={isSelected}
+          onChange={() => onToggleSelect(lead.lead_id)}
+          style={{ cursor: 'pointer', accentColor: '#6366f1' }}
+        />
+      </td>
+      <td onClick={() => setActiveLead(lead)} style={{ padding: '10px 12px', color: '#ccc', fontSize: 13 }}>{index + 1}</td>
+      <td onClick={() => setActiveLead(lead)} style={{ padding: '10px 12px', color: '#e0e0e0', fontSize: 13 }}>
         {lead.address_street || lead.address_full || '—'}
         <div style={{ fontSize: 11, color: '#666' }}>
           {[lead.address_city, lead.address_state, lead.address_zip].filter(Boolean).join(', ')}
         </div>
       </td>
-      <td style={{ padding: '10px 12px', color: '#bbb', fontSize: 13 }}>{lead.owner_name || '—'}</td>
-      <td style={{ padding: '10px 12px' }}>
+      <td onClick={() => setActiveLead(lead)} style={{ padding: '10px 12px', color: '#bbb', fontSize: 13 }}>{lead.owner_name || '—'}</td>
+      <td onClick={() => setActiveLead(lead)} style={{ padding: '10px 12px' }}>
         <span style={{
           display: 'inline-block', padding: '2px 8px', borderRadius: 4,
           fontSize: 11, fontWeight: 600, color: tierColor, background: tierColor + '20',
@@ -62,16 +81,16 @@ function LeadRow({ lead, index, isActive }: { lead: Lead; index: number; isActiv
           {tier} {lead.motivation_score ?? ''}
         </span>
       </td>
-      <td style={{ padding: '10px 12px', color: '#aaa', fontSize: 12 }}>{lead.persona_primary || '—'}</td>
-      <td style={{ padding: '10px 12px', color: '#aaa', fontSize: 12 }}>
+      <td onClick={() => setActiveLead(lead)} style={{ padding: '10px 12px', color: '#aaa', fontSize: 12 }}>{lead.persona_primary || '—'}</td>
+      <td onClick={() => setActiveLead(lead)} style={{ padding: '10px 12px', color: '#aaa', fontSize: 12 }}>
         {lead.arv_estimate ? `$${lead.arv_estimate.toLocaleString()}` : '—'}
       </td>
-      <td style={{ padding: '10px 12px', color: '#aaa', fontSize: 12 }}>
+      <td onClick={() => setActiveLead(lead)} style={{ padding: '10px 12px', color: '#aaa', fontSize: 12 }}>
         {lead.callable_phones.length > 0
           ? lead.callable_phones[0].phone_value
           : <span style={{ color: '#ef4444', fontSize: 11 }}>no phone</span>}
       </td>
-      <td style={{ padding: '10px 12px', color: '#555', fontSize: 11 }}>{lead.source || '—'}</td>
+      <td onClick={() => setActiveLead(lead)} style={{ padding: '10px 12px', color: '#555', fontSize: 11 }}>{lead.source || '—'}</td>
     </tr>
   )
 }
@@ -116,6 +135,10 @@ function DetailPanel({ lead }: { lead: Lead }) {
     border: '1px solid #2a2a3e', borderRadius: 4, color: '#ccc', fontSize: 12,
   }
 
+  const canQueue = lead.status === 'new' || lead.status === 'enriched' || lead.status === 'scored'
+  const canArchive = lead.status !== 'archived' && lead.status !== 'dead'
+  const canRemoveFromQueue = lead.status === 'queued'
+
   return (
     <div style={{
       width: 380, background: '#111118', border: '1px solid #1e1e2e',
@@ -131,7 +154,44 @@ function DetailPanel({ lead }: { lead: Lead }) {
       </div>
 
       <p style={{ fontWeight: 600, color: '#e0e0e0', fontSize: 14, margin: '0 0 2px' }}>{lead.address_full}</p>
-      <p style={{ color: '#888', fontSize: 13, margin: '0 0 16px' }}>{lead.owner_name}</p>
+      <p style={{ color: '#888', fontSize: 13, margin: '0 0 4px' }}>{lead.owner_name}</p>
+      <p style={{ fontSize: 11, color: '#555', margin: '0 0 16px' }}>Status: <span style={{ color: '#6366f1' }}>{lead.status}</span></p>
+
+      {/* Status transition buttons */}
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontSize: 10, color: '#555', textTransform: 'uppercase', marginBottom: 6 }}>Actions</div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {canQueue && (
+            <button
+              onClick={() => updateStatus.mutate({ status: 'queued', reason: 'Moved to queue from detail panel' })}
+              disabled={updateStatus.isPending}
+              style={{ ...btnBase, color: '#22c55e', background: '#22c55e18', opacity: updateStatus.isPending ? 0.5 : 1 }}
+            >{updateStatus.isPending ? 'Moving...' : 'Move to Queue'}</button>
+          )}
+          {canRemoveFromQueue && (
+            <button
+              onClick={() => updateStatus.mutate({ status: 'new', reason: 'Removed from queue' })}
+              disabled={updateStatus.isPending}
+              style={{ ...btnBase, color: '#f97316', background: '#f9731618', opacity: updateStatus.isPending ? 0.5 : 1 }}
+            >{updateStatus.isPending ? 'Removing...' : 'Remove from Queue'}</button>
+          )}
+          {canArchive && (
+            <button
+              onClick={() => updateStatus.mutate({ status: 'archived', reason: 'Archived from detail panel' })}
+              disabled={updateStatus.isPending}
+              style={{ ...btnBase, color: '#ef4444', background: '#ef444418', opacity: updateStatus.isPending ? 0.5 : 1 }}
+            >{updateStatus.isPending ? 'Archiving...' : 'Archive'}</button>
+          )}
+        </div>
+      </div>
+
+      {(updateStatus.isError || addNote.isError || scheduleFollowUp.isError) && (
+        <div style={{ padding: '6px 10px', borderRadius: 4, marginBottom: 8, background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 11 }}>
+          {updateStatus.isError && `Update failed: ${updateStatus.error instanceof Error ? updateStatus.error.message : String(updateStatus.error)}`}
+          {addNote.isError && `Note failed: ${addNote.error instanceof Error ? addNote.error.message : String(addNote.error)}`}
+          {scheduleFollowUp.isError && `Follow-up failed: ${scheduleFollowUp.error instanceof Error ? scheduleFollowUp.error.message : String(scheduleFollowUp.error)}`}
+        </div>
+      )}
 
       {/* Call disposition buttons */}
       <div style={{ marginBottom: 16 }}>
@@ -142,9 +202,9 @@ function DetailPanel({ lead }: { lead: Lead }) {
               key={d.status}
               onClick={() => updateStatus.mutate({ status: d.status })}
               disabled={updateStatus.isPending}
-              style={{ ...btnBase, color: d.color, background: d.color + '18', }}
+              style={{ ...btnBase, color: d.color, background: d.color + '18', opacity: updateStatus.isPending ? 0.5 : 1 }}
             >
-              {d.label}
+              {updateStatus.isPending ? '...' : d.label}
             </button>
           ))}
         </div>
@@ -249,22 +309,92 @@ function DetailPanel({ lead }: { lead: Lead }) {
   )
 }
 
+const PULSE_CSS = `@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}`
+let pulseInjected = false
+
 export function CallList() {
+  useEffect(() => {
+    if (pulseInjected) return
+    const style = document.createElement('style')
+    style.textContent = PULSE_CSS
+    document.head.appendChild(style)
+    pulseInjected = true
+  }, [])
+
   const [statusFilter, setStatusFilter] = useState('')
   const [listFilter, setListFilter] = useState('')
   const [dialMode, setDialMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [bulkResult, setBulkResult] = useState<string | null>(null)
+  const [pipelineOpen, setPipelineOpen] = useState(false)
   const queryClient = useQueryClient()
+  const logEndRef = useRef<HTMLDivElement>(null)
 
   const { data: leads, isLoading, error } = useQuery({
     queryKey: ['queue-all', statusFilter],
     queryFn: () => hermesClient.leads.list({
       status: statusFilter || undefined,
+      exclude_statuses: statusFilter ? undefined : 'not_interested,archived,dead',
       limit: 500,
     }),
     refetchInterval: 15_000,
   })
 
   const activeLead = useLeadStore((s) => s.activeLead)
+
+  const bulkUpdate = useMutation({
+    mutationFn: ({ status, reason }: { status: string; reason?: string }) =>
+      hermesClient.leads.bulkUpdateStatus(Array.from(selectedIds), status, reason),
+    onSuccess: (data) => {
+      setSelectedIds(new Set())
+      setBulkResult(`Updated ${data.updated} leads`)
+      setTimeout(() => setBulkResult(null), 3000)
+      queryClient.invalidateQueries({ queryKey: ['queue-all'] })
+      queryClient.invalidateQueries({ queryKey: ['pipeline-stats'] })
+    },
+    onError: (err) => {
+      setBulkResult(`Error: ${err instanceof Error ? err.message : String(err)}`)
+      setTimeout(() => setBulkResult(null), 5000)
+    },
+  })
+
+  const [pipelineLocalLog, setPipelineLocalLog] = useState<string[]>([])
+  const [pipelineError, setPipelineError] = useState<string | null>(null)
+
+  const startPipeline = useMutation({
+    mutationFn: () => hermesClient.skipTrace.runPipeline({ source: 'code_violations' }),
+    onMutate: () => {
+      setPipelineError(null)
+      setPipelineLocalLog(['Starting skip trace pipeline...'])
+      setPipelineOpen(true)
+    },
+    onSuccess: (data) => {
+      setPipelineLocalLog((prev) => [...prev, data.message || 'Pipeline launched — a browser window will open.'])
+    },
+    onError: (err) => {
+      const msg = err instanceof Error ? err.message : String(err)
+      setPipelineError(msg)
+      setPipelineLocalLog((prev) => [...prev, `ERROR: ${msg}`])
+    },
+  })
+
+  const { data: pipelineStatus } = useQuery({
+    queryKey: ['skip-trace-pipeline-status'],
+    queryFn: () => hermesClient.skipTrace.pipelineStatus(),
+    refetchInterval: pipelineOpen ? 2000 : false,
+    enabled: pipelineOpen,
+  })
+
+  useEffect(() => {
+    if (pipelineStatus && !pipelineStatus.running && pipelineStatus.phase === 'complete') {
+      queryClient.invalidateQueries({ queryKey: ['queue-all'] })
+      queryClient.invalidateQueries({ queryKey: ['pipeline-stats'] })
+    }
+  }, [pipelineStatus?.running, pipelineStatus?.phase, queryClient])
+
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [pipelineStatus?.log_lines?.length])
 
   const listNames = useMemo(() => {
     if (!leads) return []
@@ -280,6 +410,41 @@ export function CallList() {
     if (!listFilter) return leads
     return leads.filter((l) => l.last_list_name === listFilter)
   }, [leads, listFilter])
+
+  const toggleSelect = useCallback((leadId: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(leadId)) next.delete(leadId)
+      else next.add(leadId)
+      return next
+    })
+  }, [])
+
+  const selectAll = useCallback(() => {
+    setSelectedIds(new Set(filtered.map((l) => l.lead_id)))
+  }, [filtered])
+
+  const selectNone = useCallback(() => {
+    setSelectedIds(new Set())
+  }, [])
+
+  // Count how many selected leads are in each status for smart button display
+  const selectedLeads = useMemo(() => {
+    if (!leads || selectedIds.size === 0) return []
+    return leads.filter((l) => selectedIds.has(l.lead_id))
+  }, [leads, selectedIds])
+
+  const selectedStatuses = useMemo(() => {
+    const counts: Record<string, number> = {}
+    for (const l of selectedLeads) {
+      counts[l.status] = (counts[l.status] || 0) + 1
+    }
+    return counts
+  }, [selectedLeads])
+
+  const hasQueueable = (selectedStatuses['new'] || 0) + (selectedStatuses['enriched'] || 0) + (selectedStatuses['scored'] || 0) > 0
+  const hasQueuedSelected = (selectedStatuses['queued'] || 0) > 0
+  const hasArchivable = selectedLeads.some((l) => l.status !== 'archived' && l.status !== 'dead')
 
   if (isLoading) return <div style={{ color: '#666' }}>Loading call list...</div>
 
@@ -364,7 +529,7 @@ export function CallList() {
           {STATUS_FILTERS.map((f) => (
             <button
               key={f.value}
-              onClick={() => setStatusFilter(f.value)}
+              onClick={() => { setStatusFilter(f.value); setSelectedIds(new Set()) }}
               style={{
                 ...btnBase,
                 background: statusFilter === f.value ? '#6366f120' : '#111118',
@@ -375,11 +540,180 @@ export function CallList() {
           ))}
         </div>
 
+        {/* Skip trace banner -- shows when leads lack phone numbers */}
+        {(() => {
+          const noPhoneCount = filtered.filter((l) => l.callable_phones.length === 0).length
+          const isRunning = pipelineStatus?.running
+          if (noPhoneCount === 0 && !pipelineOpen) return null
+          return (
+            <div style={{
+              marginBottom: 12, padding: '10px 14px', background: '#f97316' + '10',
+              border: '1px solid #f97316' + '30', borderRadius: 8,
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <span style={{ color: '#f97316', fontSize: 13, fontWeight: 600 }}>
+                    {noPhoneCount} lead{noPhoneCount !== 1 ? 's' : ''} missing phone numbers
+                  </span>
+                  <div style={{ color: '#888', fontSize: 11, marginTop: 2 }}>
+                    {isRunning
+                      ? 'Skip trace pipeline is running — watch progress below.'
+                      : 'Click to automatically find phone numbers via PropStream.'}
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    if (isRunning) {
+                      setPipelineOpen((o) => !o)
+                    } else {
+                      startPipeline.mutate()
+                    }
+                  }}
+                  disabled={startPipeline.isPending}
+                  style={{
+                    ...btnBase, padding: '7px 18px', fontSize: 12, fontWeight: 700,
+                    color: isRunning ? '#eab308' : '#f97316',
+                    background: isRunning ? '#eab30818' : '#f9731620',
+                    borderRadius: 6,
+                  }}
+                >
+                  {startPipeline.isPending
+                    ? 'Starting...'
+                    : isRunning
+                      ? (pipelineOpen ? 'Hide Log' : 'Show Log')
+                      : 'Skip Trace Leads'}
+                </button>
+              </div>
+
+              {/* Live pipeline log panel */}
+              {pipelineOpen && (
+                <div style={{ marginTop: 10 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{
+                        display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+                        background: (isRunning || startPipeline.isPending) ? '#22c55e' : (pipelineStatus?.error || pipelineError) ? '#ef4444' : '#22c55e',
+                        animation: (isRunning || startPipeline.isPending) ? 'pulse 1.5s ease-in-out infinite' : 'none',
+                      }} />
+                      <span style={{ color: '#aaa', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                        {startPipeline.isPending && 'Starting...'}
+                        {!startPipeline.isPending && pipelineStatus?.phase === 'launching' && 'Launching...'}
+                        {pipelineStatus?.phase === 'running' && `Running — ${pipelineStatus.address_count} addresses`}
+                        {pipelineStatus?.phase === 'ingesting' && 'Ingesting results...'}
+                        {pipelineStatus?.phase === 'complete' && 'Complete'}
+                        {pipelineStatus?.phase === 'error' && 'Failed'}
+                        {!startPipeline.isPending && pipelineStatus?.phase === 'idle' && 'Idle'}
+                        {!startPipeline.isPending && !pipelineStatus && 'Connecting...'}
+                      </span>
+                    </div>
+                    {!isRunning && !startPipeline.isPending && (
+                      <button
+                        onClick={() => setPipelineOpen(false)}
+                        style={{ background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: 14 }}
+                      >&times;</button>
+                    )}
+                  </div>
+                  <div style={{
+                    maxHeight: 240, overflow: 'auto', padding: '8px 10px',
+                    background: '#0a0a0f', borderRadius: 6, border: '1px solid #1e1e2e',
+                    fontFamily: 'monospace', fontSize: 11, lineHeight: 1.6,
+                  }}>
+                    {(pipelineStatus?.log_lines?.length ? pipelineStatus.log_lines : pipelineLocalLog).map((line, i) => (
+                      <div key={i} style={{
+                        color: line.includes('ERROR') ? '#ef4444'
+                          : line.includes('[pipeline]') ? '#6366f1'
+                            : line.includes('BALANCE') ? '#eab308'
+                              : '#888',
+                      }}>{line}</div>
+                    ))}
+                    <div ref={logEndRef} />
+                    {startPipeline.isPending && (!pipelineStatus?.log_lines?.length) && pipelineLocalLog.length <= 1 && (
+                      <div style={{ color: '#f59e0b' }}>Sending request to Hermes...</div>
+                    )}
+                  </div>
+                  {(pipelineStatus?.error || pipelineError) && (
+                    <div style={{ marginTop: 6, padding: '6px 10px', background: '#ef444418', borderRadius: 4, color: '#ef4444', fontSize: 11 }}>
+                      {pipelineStatus?.error || pipelineError}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )
+        })()}
+
+        {/* Bulk action bar -- appears when leads are selected */}
+        {selectedIds.size > 0 && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12,
+            padding: '8px 12px', background: '#1a1a2e', borderRadius: 8,
+            border: '1px solid #2a2a3e',
+          }}>
+            <span style={{ color: '#ccc', fontSize: 12, fontWeight: 600, marginRight: 4 }}>
+              {selectedIds.size} selected
+            </span>
+            <span style={{ color: '#333', fontSize: 16, userSelect: 'none' }}>|</span>
+
+            {hasQueueable && (
+              <button
+                onClick={() => bulkUpdate.mutate({ status: 'queued', reason: 'Bulk moved to queue' })}
+                disabled={bulkUpdate.isPending}
+                style={{ ...btnBase, color: '#22c55e', background: bulkUpdate.isPending ? '#22c55e30' : '#22c55e18', padding: '6px 14px' }}
+              >{bulkUpdate.isPending ? 'Moving...' : 'Move to Queue'}</button>
+            )}
+
+            {hasQueuedSelected && (
+              <button
+                onClick={() => bulkUpdate.mutate({ status: 'new', reason: 'Bulk removed from queue' })}
+                disabled={bulkUpdate.isPending}
+                style={{ ...btnBase, color: '#f97316', background: bulkUpdate.isPending ? '#f9731630' : '#f9731618', padding: '6px 14px' }}
+              >{bulkUpdate.isPending ? 'Removing...' : 'Remove from Queue'}</button>
+            )}
+
+            {hasArchivable && (
+              <button
+                onClick={() => bulkUpdate.mutate({ status: 'archived', reason: 'Bulk archived' })}
+                disabled={bulkUpdate.isPending}
+                style={{ ...btnBase, color: '#ef4444', background: bulkUpdate.isPending ? '#ef444430' : '#ef444418', padding: '6px 14px' }}
+              >{bulkUpdate.isPending ? 'Archiving...' : 'Archive'}</button>
+            )}
+
+            <button
+              onClick={selectNone}
+              style={{ ...btnBase, color: '#888', background: '#1e1e2e', marginLeft: 'auto' }}
+            >Clear Selection</button>
+          </div>
+        )}
+
+        {/* Bulk result toast */}
+        {bulkResult && (
+          <div style={{
+            marginBottom: 12, padding: '8px 14px', borderRadius: 6, fontSize: 12,
+            background: bulkResult.startsWith('Error:') ? '#1f0f0f' : '#22c55e18',
+            border: `1px solid ${bulkResult.startsWith('Error:') ? '#3a1a1a' : '#22c55e40'}`,
+            color: bulkResult.startsWith('Error:') ? '#ef4444' : '#22c55e',
+          }}>
+            {bulkResult}
+          </div>
+        )}
+
         {/* Table */}
         <div style={{ overflow: 'auto', borderRadius: 8, border: '1px solid #1e1e2e' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', background: '#111118' }}>
             <thead>
               <tr style={{ borderBottom: '1px solid #2a2a3e' }}>
+                <th style={{ padding: '10px 8px', width: 36 }}>
+                  <input
+                    type="checkbox"
+                    checked={filtered.length > 0 && selectedIds.size === filtered.length}
+                    onChange={() => {
+                      if (selectedIds.size === filtered.length) selectNone()
+                      else selectAll()
+                    }}
+                    style={{ cursor: 'pointer', accentColor: '#6366f1' }}
+                    title="Select all"
+                  />
+                </th>
                 {['#', 'Address', 'Owner', 'Score', 'Persona', 'ARV', 'Phone', 'Source'].map((h) => (
                   <th key={h} style={{
                     padding: '10px 12px', textAlign: 'left', fontSize: 11, color: '#666',
@@ -390,11 +724,18 @@ export function CallList() {
             </thead>
             <tbody>
               {filtered.map((lead, i) => (
-                <LeadRow key={lead.lead_id || i} lead={lead} index={i} isActive={activeLead?.lead_id === lead.lead_id} />
+                <LeadRow
+                  key={lead.lead_id || i}
+                  lead={lead}
+                  index={i}
+                  isActive={activeLead?.lead_id === lead.lead_id}
+                  isSelected={selectedIds.has(lead.lead_id)}
+                  onToggleSelect={toggleSelect}
+                />
               ))}
               {filtered.length === 0 && (
                 <tr>
-                  <td colSpan={8} style={{ padding: 32, textAlign: 'center', color: '#444' }}>
+                  <td colSpan={9} style={{ padding: 32, textAlign: 'center', color: '#444' }}>
                     {statusFilter || listFilter ? 'No leads match this filter.' : 'No leads in queue. Run the pipeline to generate a call list.'}
                   </td>
                 </tr>

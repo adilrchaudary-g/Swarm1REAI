@@ -1,4 +1,4 @@
-import type { Lead, PhoneRecord, PipelineStats, SourceAdapter, KpiSummary, FollowUp, MarketInfo, SocialComment, SocialCampaign, SocialBanditStats, FoiaRequest, WaterShutoffRecord, WaterShutoffStats, FsboListing, FsboMarket, FsboStats } from './types'
+import type { Lead, PhoneRecord, PipelineStats, SourceAdapter, KpiSummary, FollowUp, MarketInfo, SocialComment, SocialCampaign, SocialBanditStats, FoiaRequest, WaterShutoffRecord, WaterShutoffStats, FsboListing, FsboMarket, FsboStats, CourtRecordCounty, CourtRecordCase, CourtRecordStats, CourtRecordScrapeStatus } from './types'
 
 const BASE = '/api'
 
@@ -46,7 +46,7 @@ function normalizeLead(raw: any): Lead {
 
 export const hermesClient = {
   leads: {
-    list: async (params?: { status?: string; tier?: string; source?: string; persona?: string; limit?: number; offset?: number }) => {
+    list: async (params?: { status?: string; exclude_statuses?: string; tier?: string; source?: string; persona?: string; limit?: number; offset?: number }) => {
       const qs = new URLSearchParams()
       if (params) {
         for (const [k, v] of Object.entries(params)) {
@@ -67,6 +67,8 @@ export const hermesClient = {
       post<{ status: string; lead_id: string }>(`/leads/${id}/notes`, { note_type, content }),
     archive: (id: string, reason?: string) =>
       post<{ status: string; lead_id: string }>(`/leads/${id}/status`, { status: 'archived', reason: reason || 'Bad number' }),
+    bulkUpdateStatus: (leadIds: string[], status: string, reason?: string) =>
+      post<{ status: string; updated: number; errors?: string[] }>('/leads/bulk-status', { lead_ids: leadIds, status, reason }),
   },
 
   pipeline: {
@@ -99,6 +101,22 @@ export const hermesClient = {
   skipTrace: {
     queue: (params?: { lead_ids?: string[]; source?: string; limit?: number }) =>
       post<{ status: string; queued: number; command_id?: string }>('/skip-trace/queue', params),
+    exportForPropstream: (params?: { source?: string; limit?: number }) =>
+      post<{ status: string; count: number; csv_path?: string; message?: string }>('/skip-trace/export-for-propstream', params),
+    ingestCsvs: () =>
+      post<{ status: string; files_processed: number; total_rows_parsed: number; code_violation_leads_with_phones: number }>('/skip-trace/ingest-csv', {}),
+    runPipeline: (params?: { source?: string }) =>
+      post<{ status: string; job_id?: string; address_count?: number; message?: string }>('/skip-trace/run-pipeline', params),
+    pipelineStatus: () =>
+      get<{
+        running: boolean; job_id: string | null; phase: string;
+        log_lines: string[]; started_at: string | null; completed_at: string | null;
+        result: Record<string, unknown> | null; error: string | null; address_count: number;
+      }>('/skip-trace/pipeline-status'),
+  },
+
+  commandQueue: {
+    status: () => get<{ total: number; pending: number; delivered: number; by_type: Record<string, { total: number; pending: number }> }>('/command-queue/status'),
   },
 
   quota: () => get<Record<string, number>>('/quota'),
@@ -223,5 +241,41 @@ export const hermesClient = {
 
     ingest: (listingIds: number[]) =>
       post<{ status: string; ingested: number; leads_created: number }>('/fsbo/ingest', { listing_ids: listingIds }),
+  },
+
+  courtRecords: {
+    stats: () => get<CourtRecordStats>('/court-records/stats'),
+    scrapeStatus: () => get<CourtRecordScrapeStatus>('/court-records/scrape-status'),
+
+    counties: {
+      list: () => get<CourtRecordCounty[]>('/court-records/counties'),
+      upsert: (data: { county: string; state?: string; court_id: string; appraiser_url?: string; appraiser_type?: string }) =>
+        post<{ status: string; id: number; action: string }>('/court-records/counties', data),
+      toggle: (countyId: number, active: boolean) =>
+        post<{ status: string }>(`/court-records/counties/${countyId}/toggle`, { active }),
+    },
+
+    cases: {
+      list: (params?: { status?: string; county_id?: number; limit?: number }) => {
+        const qs = new URLSearchParams()
+        if (params) {
+          for (const [k, v] of Object.entries(params)) {
+            if (v !== undefined) qs.set(k, String(v))
+          }
+        }
+        const query = qs.toString()
+        return get<CourtRecordCase[]>(`/court-records/cases${query ? `?${query}` : ''}`)
+      },
+      classify: (caseId: number, status: string) =>
+        post<{ status: string }>(`/court-records/cases/${caseId}/classify`, { status }),
+      bulkClassify: (caseIds: number[], status: string) =>
+        post<{ status: string; updated: number }>('/court-records/cases/bulk-classify', { case_ids: caseIds, status }),
+    },
+
+    scrape: (params: { county: string; case_type?: string; days_back?: number }) =>
+      post<{ status: string; job_id?: string; message?: string }>('/court-records/scrape', params),
+
+    ingest: (caseIds: number[]) =>
+      post<{ status: string; ingested: number; leads_created: number }>('/court-records/ingest', { case_ids: caseIds }),
   },
 }

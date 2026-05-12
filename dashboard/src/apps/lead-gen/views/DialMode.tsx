@@ -3,6 +3,13 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { hermesClient } from '../../../api/hermes-client'
 import type { Lead } from '../../../api/types'
 
+function formatPhone(raw: string): string {
+  const digits = raw.replace(/\D/g, '')
+  const d = digits.length === 11 && digits[0] === '1' ? digits.slice(1) : digits
+  if (d.length === 10) return `${d.slice(0, 3)}-${d.slice(3, 6)}-${d.slice(6)}`
+  return raw
+}
+
 const TIER_COLORS: Record<string, string> = {
   HOT: '#ef4444', WARM: '#f97316', LUKEWARM: '#eab308', COLD: '#3b82f6', ICE: '#94a3b8',
   hot: '#ef4444', warm: '#f97316', lukewarm: '#eab308', cold: '#3b82f6', ice: '#94a3b8',
@@ -37,7 +44,8 @@ export function DialMode({ leads, onClose }: Props) {
   const lead = queue[currentIndex] ?? null
   const total = queue.length
   const hasNext = currentIndex < total - 1
-  const phone = lead?.callable_phones?.[0]?.phone_value || lead?.callable_phones?.[0]?.phone_digits || null
+  const rawPhone = lead?.callable_phones?.[0]?.phone_value || lead?.callable_phones?.[0]?.phone_digits || null
+  const phone = rawPhone ? formatPhone(rawPhone) : null
 
   const invalidate = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['queue-all'] })
@@ -48,7 +56,7 @@ export function DialMode({ leads, onClose }: Props) {
   const updateStatus = useMutation({
     mutationFn: ({ status, reason }: { status: string; reason?: string }) =>
       hermesClient.leads.updateStatus(lead!.lead_id, status, reason),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate(),
   })
 
   const addNote = useMutation({
@@ -58,18 +66,21 @@ export function DialMode({ leads, onClose }: Props) {
 
   const archiveLead = useMutation({
     mutationFn: () => hermesClient.leads.archive(lead!.lead_id, 'Bad number'),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate(),
   })
 
   const scheduleFollowUp = useMutation({
     mutationFn: () => hermesClient.followUps.create(lead!.lead_id, 'callback', fuDate, note || undefined),
-    onSuccess: () => {
-      updateStatus.mutate({ status: 'follow_up', reason: `Follow-up scheduled ${fuDate}` })
+    onSuccess: async () => {
+      await updateStatus.mutateAsync({ status: 'follow_up', reason: `Follow-up scheduled ${fuDate}` })
       queryClient.invalidateQueries({ queryKey: ['follow-ups'] })
     },
   })
 
-  function advanceNext() {
+  function advanceNext(skipLeadId?: string) {
+    if (skipLeadId) {
+      setSkippedIds((s) => new Set(s).add(skipLeadId))
+    }
     setPhase('idle')
     setShowDetail(false)
     setNote('')
@@ -88,41 +99,46 @@ export function DialMode({ leads, onClose }: Props) {
     setPhase('interested')
   }
 
-  function handleNotInterested() {
-    updateStatus.mutate({ status: 'not_interested' })
-    setSkippedIds((s) => new Set(s).add(lead!.lead_id))
-    advanceNext()
+  async function handleNotInterested() {
+    const id = lead!.lead_id
+    await updateStatus.mutateAsync({ status: 'not_interested', reason: 'Not interested — dial time' })
+    advanceNext(id)
   }
 
-  function handleBadNumber() {
-    archiveLead.mutate()
-    setSkippedIds((s) => new Set(s).add(lead!.lead_id))
-    advanceNext()
+  async function handleBadNumber() {
+    const id = lead!.lead_id
+    await archiveLead.mutateAsync()
+    advanceNext(id)
   }
 
-  function handleVoicemail() {
-    updateStatus.mutate({ status: 'contacted', reason: 'Voicemail' })
-    setVoicemailIds((ids) => [...ids.filter((id) => id !== lead!.lead_id), lead!.lead_id])
-    advanceNext()
+  async function handleVoicemail() {
+    const id = lead!.lead_id
+    await updateStatus.mutateAsync({ status: 'contacted', reason: 'Voicemail — will retry' })
+    setVoicemailIds((ids) => [...ids.filter((v) => v !== id), id])
+    setPhase('idle')
+    setShowDetail(false)
+    setNote('')
+    setFuDate('')
+    if (hasNext) setCurrentIndex((i) => i + 1)
+    else setCurrentIndex(0)
   }
 
-  function handleSaveInterested() {
-    if (note.trim()) addNote.mutate()
-    updateStatus.mutate({ status: 'interested' })
+  async function handleSaveInterested() {
+    if (note.trim()) await addNote.mutateAsync()
+    await updateStatus.mutateAsync({ status: 'interested', reason: 'Interested — dial time' })
     setPhase('schedule_fu')
   }
 
-  function handleSaveFollowUp() {
+  async function handleSaveFollowUp() {
+    const id = lead!.lead_id
     if (fuDate) {
-      scheduleFollowUp.mutate()
+      await scheduleFollowUp.mutateAsync()
     }
-    setSkippedIds((s) => new Set(s).add(lead!.lead_id))
-    advanceNext()
+    advanceNext(id)
   }
 
   function handleSkipFollowUp() {
-    setSkippedIds((s) => new Set(s).add(lead!.lead_id))
-    advanceNext()
+    advanceNext(lead!.lead_id)
   }
 
   if (!lead) {
@@ -187,7 +203,7 @@ export function DialMode({ leads, onClose }: Props) {
           padding: '10px 14px', background: '#111118', borderRadius: 6, marginBottom: 12,
         }}>
           <span style={{ color: '#22c55e', fontSize: 18 }}>&#9742;</span>
-          <span style={{ color: phone ? '#e0e0e0' : '#ef4444', fontSize: 16, fontWeight: 600, letterSpacing: 0.5 }}>
+          <span style={{ color: phone ? '#e0e0e0' : '#ef4444', fontSize: 22, fontWeight: 700, letterSpacing: 1 }}>
             {phone || 'No phone on file'}
           </span>
           {lead.callable_phones?.[0]?.phone_type && (
@@ -221,6 +237,18 @@ export function DialMode({ leads, onClose }: Props) {
       >
         {showDetail ? 'Hide Details' : 'View Details'}
       </button>
+
+      {(updateStatus.isError || addNote.isError || archiveLead.isError || scheduleFollowUp.isError) && (
+        <div style={{
+          padding: '8px 14px', borderRadius: 6, marginBottom: 12,
+          background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
+        }}>
+          {updateStatus.isError && `Update failed: ${updateStatus.error instanceof Error ? updateStatus.error.message : String(updateStatus.error)}`}
+          {addNote.isError && `Note failed: ${addNote.error instanceof Error ? addNote.error.message : String(addNote.error)}`}
+          {archiveLead.isError && `Archive failed: ${archiveLead.error instanceof Error ? archiveLead.error.message : String(archiveLead.error)}`}
+          {scheduleFollowUp.isError && `Follow-up failed: ${scheduleFollowUp.error instanceof Error ? scheduleFollowUp.error.message : String(scheduleFollowUp.error)}`}
+        </div>
+      )}
 
       {showDetail && <DetailExpand lead={lead} />}
 
@@ -387,7 +415,7 @@ function DetailExpand({ lead }: { lead: Lead }) {
           <div style={{ fontSize: 10, color: '#555', textTransform: 'uppercase', marginBottom: 4 }}>All Phones</div>
           {lead.callable_phones.map((p, i) => (
             <div key={i} style={{ color: '#ccc', fontSize: 13 }}>
-              {p.phone_value} <span style={{ color: '#555' }}>({p.phone_type})</span>
+              {formatPhone(p.phone_value)} <span style={{ color: '#555' }}>({p.phone_type})</span>
               {p.dnc ? <span style={{ color: '#ef4444', marginLeft: 4 }}>DNC</span> : null}
             </div>
           ))}

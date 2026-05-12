@@ -17,6 +17,33 @@ from urllib.parse import parse_qs, urlparse
 
 from .store import HermesStore
 
+# ── Skip-trace pipeline state (module-level, shared across requests) ──
+_pipeline_state: dict[str, Any] = {
+    "running": False,
+    "job_id": None,
+    "log_lines": [],
+    "started_at": None,
+    "completed_at": None,
+    "result": None,
+    "error": None,
+    "address_count": 0,
+    "phase": "idle",
+}
+_pipeline_lock = threading.Lock()
+
+# ── Court records scrape state (module-level, shared across requests) ──
+_court_records_state: dict[str, Any] = {
+    "running": False,
+    "job_id": None,
+    "log_lines": [],
+    "started_at": None,
+    "completed_at": None,
+    "result": None,
+    "error": None,
+    "phase": "idle",
+}
+_court_records_lock = threading.Lock()
+
 # Content types for static files
 STATIC_CONTENT_TYPES: dict[str, str] = {
     ".html": "text/html; charset=utf-8",
@@ -79,6 +106,13 @@ class HermesRuntime:
             "fsbo",
             "FSBOs (Zillow)",
             "MODERATE",
+        )
+
+        # Always register the court_records source
+        self.store.upsert_source_adapter(
+            "court_records",
+            "Court Records (CaseNet)",
+            "PARTIAL",
         )
 
     def create_server(self, host: str = "127.0.0.1", port: int = 8765) -> ThreadingHTTPServer:
@@ -144,8 +178,11 @@ class HermesRuntime:
                 # ── Dashboard API (GET) ──────────────────────────────
 
                 if path == "/api/leads":
+                    exclude_raw = self._query_first(query, "exclude_statuses")
+                    exclude_list = [s.strip() for s in exclude_raw.split(",") if s.strip()] if exclude_raw else None
                     data = runtime.store.list_all_leads(
                         status=self._query_first(query, "status"),
+                        exclude_statuses=exclude_list,
                         tier=self._query_first(query, "tier"),
                         source=self._query_first(query, "source"),
                         persona=self._query_first(query, "persona"),
@@ -189,6 +226,10 @@ class HermesRuntime:
 
                 if path == "/api/kpi/summary":
                     self._send_json(HTTPStatus.OK, runtime.store.get_kpi_summary())
+                    return
+
+                if path == "/api/command-queue/status":
+                    self._send_json(HTTPStatus.OK, runtime.store.get_command_queue_status())
                     return
 
                 if path == "/api/follow-ups":
@@ -263,6 +304,34 @@ class HermesRuntime:
                         limit=int(self._query_first(query, "limit", "200")),
                     )
                     self._send_json(HTTPStatus.OK, data)
+                    return
+
+                # ── Court Records (GET) ──────────────────────────────
+                if path == "/api/court-records/stats":
+                    self._send_json(HTTPStatus.OK, runtime.store.court_record_stats())
+                    return
+
+                if path == "/api/court-records/counties":
+                    self._send_json(HTTPStatus.OK, runtime.store.list_court_record_counties())
+                    return
+
+                if path == "/api/court-records/cases":
+                    data = runtime.store.list_court_record_cases(
+                        status=self._query_first(query, "status"),
+                        county_id=int(self._query_first(query, "county_id", "0")) or None,
+                        limit=int(self._query_first(query, "limit", "200")),
+                    )
+                    self._send_json(HTTPStatus.OK, data)
+                    return
+
+                if path == "/api/court-records/scrape-status":
+                    with _court_records_lock:
+                        self._send_json(HTTPStatus.OK, dict(_court_records_state))
+                    return
+
+                if path == "/api/skip-trace/pipeline-status":
+                    with _pipeline_lock:
+                        self._send_json(HTTPStatus.OK, dict(_pipeline_state))
                     return
 
                 # ── Static file serving (dashboard SPA) ───────────
@@ -352,6 +421,16 @@ class HermesRuntime:
 
                 # ── Dashboard API (POST) ─────────────────────────────
 
+                if path == "/api/leads/bulk-status":
+                    body = self._read_json()
+                    result = runtime.store.bulk_update_lead_status(
+                        body.get("lead_ids", []),
+                        body.get("status", ""),
+                        body.get("reason"),
+                    )
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
                 m = re.match(r"^/api/leads/([^/]+)/status$", path)
                 if m:
                     body = self._read_json()
@@ -386,6 +465,31 @@ class HermesRuntime:
                         lead_ids=body.get("lead_ids"),
                         source=body.get("source", "code_violations"),
                         limit=body.get("limit", 100),
+                    )
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                if path == "/api/skip-trace/ingest-csv":
+                    body = self._read_json()
+                    result = _ingest_propstream_csvs(runtime)
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                if path == "/api/skip-trace/export-for-propstream":
+                    body = self._read_json()
+                    result = _export_for_propstream(
+                        runtime,
+                        source=body.get("source", "code_violations"),
+                        limit=body.get("limit", 5000),
+                    )
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                if path == "/api/skip-trace/run-pipeline":
+                    body = self._read_json()
+                    result = _run_skip_trace_pipeline(
+                        runtime,
+                        source=body.get("source", "code_violations"),
                     )
                     self._send_json(HTTPStatus.OK, result)
                     return
@@ -609,6 +713,66 @@ class HermesRuntime:
                     body = self._read_json()
                     result = runtime.store.ingest_fsbo_listings(
                         body.get("listing_ids", []),
+                    )
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                # ── Court Records (POST) ──────────────────────────────
+                if path == "/api/court-records/counties":
+                    body = self._read_json()
+                    result = runtime.store.upsert_court_record_county(
+                        body["county"], body.get("state", "MO"), body["court_id"],
+                        appraiser_url=body.get("appraiser_url"),
+                        appraiser_type=body.get("appraiser_type"),
+                    )
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                m = re.match(r"^/api/court-records/counties/(\d+)/toggle$", path)
+                if m:
+                    body = self._read_json()
+                    result = runtime.store.toggle_court_record_county(
+                        int(m.group(1)), body.get("active", True),
+                    )
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                if path == "/api/court-records/scrape":
+                    body = self._read_json()
+                    result = _start_court_records_scrape(runtime, body)
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                if path == "/api/court-records/import":
+                    body = self._read_json()
+                    result = runtime.store.import_court_record_cases(
+                        body.get("cases", []),
+                        county_id=body.get("county_id"),
+                    )
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                m = re.match(r"^/api/court-records/cases/(\d+)/classify$", path)
+                if m:
+                    body = self._read_json()
+                    result = runtime.store.classify_court_record_case(
+                        int(m.group(1)), body.get("status", "new"),
+                    )
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                if path == "/api/court-records/cases/bulk-classify":
+                    body = self._read_json()
+                    result = runtime.store.bulk_classify_court_record_cases(
+                        body.get("case_ids", []), body.get("status", "junk"),
+                    )
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                if path == "/api/court-records/ingest":
+                    body = self._read_json()
+                    result = runtime.store.ingest_court_record_cases(
+                        body.get("case_ids", []),
                     )
                     self._send_json(HTTPStatus.OK, result)
                     return
@@ -868,6 +1032,493 @@ def _get_markets(runtime: HermesRuntime) -> dict[str, Any]:
         return {"status": "ok", "markets": markets}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+def _export_for_propstream(
+    runtime: HermesRuntime,
+    source: str = "code_violations",
+    limit: int = 5000,
+) -> dict[str, Any]:
+    """Export leads without phones as a CSV file ready for PropStream upload.
+
+    Creates a CSV in the PropStream upload format (Address, City, State, Zip)
+    that can be directly uploaded to PropStream for skip tracing.
+    """
+    import csv as csv_mod
+    import io
+
+    try:
+        with runtime.store._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT
+                    p.address_street, p.address_city, p.address_state, p.address_zip
+                FROM leads l
+                JOIN properties p ON p.property_id = l.property_id
+                LEFT JOIN owner_phones op ON op.owner_id = l.owner_id
+                WHERE l.source = ?
+                AND op.id IS NULL
+                AND l.status NOT IN ('archived', 'dead')
+                AND p.address_street IS NOT NULL
+                AND p.address_street != ''
+                LIMIT ?
+                """,
+                (source, limit),
+            ).fetchall()
+
+        if not rows:
+            return {"status": "ok", "message": "No leads need skip trace", "count": 0}
+
+        output = io.StringIO()
+        writer = csv_mod.writer(output)
+        writer.writerow(["Address", "City", "State", "Zip"])
+        for r in rows:
+            writer.writerow([
+                r["address_street"] or "",
+                r["address_city"] or "",
+                r["address_state"] or "",
+                r["address_zip"] or "",
+            ])
+
+        csv_content = output.getvalue()
+        export_dir = runtime.root / "data" / "exports"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        export_path = export_dir / f"skip-trace-upload-{source}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.csv"
+        export_path.write_text(csv_content, encoding="utf-8")
+
+        return {
+            "status": "ok",
+            "count": len(rows),
+            "csv_path": str(export_path),
+            "message": (
+                f"Exported {len(rows)} addresses to {export_path}. "
+                "Upload this CSV to PropStream: Marketing Lists > Import List > Upload CSV. "
+                "Then skip trace the list and export with phone numbers. "
+                "Finally, place the exported CSV in lead-vault/acquisition/propstream/ "
+                "and click 'Ingest PropStream CSVs' to import the phone numbers."
+            ),
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+def _ingest_propstream_csvs(runtime: HermesRuntime) -> dict[str, Any]:
+    """Scan existing PropStream CSV exports and ingest them as EXPORT events.
+
+    This finds all CSV files in the lead-vault/acquisition/propstream directory,
+    parses their phone/owner data, and feeds them through the ingest pipeline
+    so they can be matched to existing leads (especially code violation leads)
+    via address-based matching.
+    """
+    import csv as csv_mod
+    import uuid
+
+    propstream_root = runtime.root.parent / "lead-vault" / "acquisition" / "propstream"
+    if not propstream_root.is_dir():
+        return {"status": "error", "message": f"PropStream root not found: {propstream_root}"}
+
+    csv_files = list(propstream_root.rglob("*.csv"))
+    if not csv_files:
+        return {"status": "ok", "message": "No CSV files found", "ingested": 0}
+
+    total_rows = 0
+    total_matched = 0
+    files_processed = 0
+
+    for csv_path in csv_files:
+        try:
+            with open(csv_path, "r", errors="replace") as f:
+                reader = csv_mod.DictReader(f)
+                items = []
+                for row in reader:
+                    addr_street = (row.get("Address") or "").strip()
+                    city = (row.get("City") or "").strip()
+                    state = (row.get("State") or "").strip()
+                    zipcode = (row.get("Zip") or "").strip()[:5]
+                    if not addr_street or not city:
+                        continue
+
+                    full = ", ".join(p for p in [addr_street, city, state, zipcode] if p)
+                    owner1_first = (row.get("Owner 1 First Name") or "").strip()
+                    owner1_last = (row.get("Owner 1 Last Name") or "").strip()
+                    owner_name = f"{owner1_first} {owner1_last}".strip()
+
+                    phones = []
+                    for i in range(1, 6):
+                        phone = (row.get(f"Phone {i}") or "").strip()
+                        ptype = (row.get(f"Phone {i} Type") or "").strip()
+                        dnc = (row.get(f"Phone {i} DNC") or "").strip()
+                        if phone and len(phone) >= 10:
+                            phones.append({
+                                "value": phone,
+                                "type": ptype.lower() if ptype else "unknown",
+                                "dnc": dnc.lower() in ("yes", "true", "1", "y"),
+                            })
+
+                    emails = []
+                    for i in range(1, 5):
+                        email = (row.get(f"Email {i}") or "").strip()
+                        if email and "@" in email:
+                            emails.append(email)
+
+                    item: dict[str, Any] = {
+                        "property_id": full,
+                        "address_full": full,
+                        "address_street": addr_street,
+                        "address_city": city,
+                        "address_state": state,
+                        "address_zip": zipcode,
+                        "owner_name": owner_name,
+                        "mailing_address": (row.get("Mailing Address") or "").strip(),
+                        "phone_numbers": phones,
+                        "email_addresses": emails,
+                        "parcel_number": (row.get("APN") or "").strip(),
+                        "property_type": (row.get("Property Type") or "").strip(),
+                        "bedrooms": row.get("Bedrooms"),
+                        "bathrooms": row.get("Total Bathrooms"),
+                        "square_feet": row.get("Building Sqft"),
+                        "lot_size_sqft": row.get("Lot Size Sqft"),
+                        "year_built": row.get("Effective Year Built"),
+                        "source": "propstream",
+                        "distress_signals": [],
+                    }
+
+                    # Parse numeric fields
+                    for key in ("bedrooms", "bathrooms", "square_feet", "lot_size_sqft", "year_built"):
+                        val = item.get(key)
+                        if val:
+                            try:
+                                item[key] = int(str(val).replace(",", "").split(".")[0])
+                            except (ValueError, TypeError):
+                                item[key] = None
+
+                    est_value = (row.get("Est. Value") or "").replace(",", "").replace("$", "").strip()
+                    if est_value:
+                        try:
+                            item["arv_estimate"] = int(float(est_value))
+                        except (ValueError, TypeError):
+                            pass
+
+                    items.append(item)
+                    total_rows += 1
+
+            if not items:
+                continue
+
+            list_name = csv_path.parent.parent.name + " / " + csv_path.stem
+            envelope = {
+                "message_id": f"csv-ingest-{uuid.uuid4().hex[:8]}",
+                "type": "event",
+                "lane": "houses",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "payload": {
+                    "command_type": "EXPORT",
+                    "status": "success",
+                    "items": items,
+                    "source_type": "propstream",
+                    "list_name": list_name,
+                    "record_count": len(items),
+                },
+            }
+            runtime.store.ingest_envelope(envelope)
+            files_processed += 1
+
+        except Exception as e:
+            continue
+
+    # Count how many code violation leads now have phones
+    with runtime.store._connect() as conn:
+        result = conn.execute("""
+            SELECT
+                COUNT(DISTINCT l.lead_id) as total_cv,
+                COUNT(DISTINCT CASE WHEN op.id IS NOT NULL THEN l.lead_id END) as with_phones
+            FROM leads l
+            LEFT JOIN owner_phones op ON op.owner_id = l.owner_id
+            WHERE l.source = 'code_violations'
+        """).fetchone()
+        cv_total = result["total_cv"]
+        cv_with_phones = result["with_phones"]
+
+    return {
+        "status": "ok",
+        "csv_files_found": len(csv_files),
+        "files_processed": files_processed,
+        "total_rows_parsed": total_rows,
+        "code_violation_leads": cv_total,
+        "code_violation_leads_with_phones": cv_with_phones,
+    }
+
+
+def _run_skip_trace_pipeline(
+    runtime: HermesRuntime,
+    source: str = "code_violations",
+) -> dict[str, Any]:
+    """Full automated pipeline: export CSV → propstream-runner import-skip-trace → ingest.
+
+    Spawns the propstream-runner as a visible subprocess so the user can watch
+    the browser automation. Progress is available via /api/skip-trace/pipeline-status.
+    """
+    global _pipeline_state
+    import uuid
+
+    with _pipeline_lock:
+        if _pipeline_state["running"]:
+            return {"status": "error", "message": "Pipeline already running"}
+
+    # Step 1: Export addresses to CSV
+    export_result = _export_for_propstream(runtime, source=source)
+    if export_result.get("count", 0) == 0:
+        return {"status": "ok", "message": "No leads need skip trace — all leads already have phone numbers", "count": 0}
+
+    csv_path = export_result["csv_path"]
+    count = export_result["count"]
+    job_id = uuid.uuid4().hex[:8]
+
+    with _pipeline_lock:
+        _pipeline_state.update({
+            "running": True,
+            "job_id": job_id,
+            "log_lines": [
+                f"[pipeline] Exported {count} addresses needing phone numbers",
+                f"[pipeline] CSV saved to {csv_path}",
+                f"[pipeline] Launching PropStream automation — a browser window will open...",
+            ],
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "completed_at": None,
+            "result": None,
+            "error": None,
+            "address_count": count,
+            "phase": "launching",
+        })
+
+    runner_dir = runtime.root.parent / "propstream-runner"
+    tsx_bin = runner_dir / "node_modules" / ".bin" / "tsx"
+
+    def _run():
+        global _pipeline_state
+        try:
+            with _pipeline_lock:
+                _pipeline_state["phase"] = "running"
+
+            proc = subprocess.Popen(
+                [str(tsx_bin), "src/index.ts", "import-skip-trace", str(csv_path)],
+                cwd=str(runner_dir),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            for line in iter(proc.stdout.readline, ""):
+                stripped = line.rstrip()
+                if stripped:
+                    with _pipeline_lock:
+                        _pipeline_state["log_lines"].append(stripped)
+            proc.wait()
+
+            if proc.returncode == 0:
+                with _pipeline_lock:
+                    _pipeline_state["phase"] = "ingesting"
+                    _pipeline_state["log_lines"].append("[pipeline] Runner complete — ingesting results back to Hermes...")
+
+                ingest_result = _ingest_propstream_csvs(runtime)
+                with _pipeline_lock:
+                    _pipeline_state["result"] = ingest_result
+                    phones = ingest_result.get("code_violation_leads_with_phones", 0)
+                    total = ingest_result.get("code_violation_leads", 0)
+                    _pipeline_state["log_lines"].append(
+                        f"[pipeline] Done — {phones}/{total} leads now have phone numbers"
+                    )
+            else:
+                with _pipeline_lock:
+                    _pipeline_state["error"] = f"PropStream runner exited with code {proc.returncode}"
+                    _pipeline_state["log_lines"].append(
+                        f"[pipeline] ERROR: runner exited with code {proc.returncode}"
+                    )
+        except FileNotFoundError:
+            with _pipeline_lock:
+                _pipeline_state["error"] = (
+                    f"PropStream runner not found at {runner_dir}. "
+                    "Make sure propstream-runner has its dependencies installed (npm install)."
+                )
+                _pipeline_state["log_lines"].append(f"[pipeline] ERROR: {_pipeline_state['error']}")
+        except Exception as e:
+            with _pipeline_lock:
+                _pipeline_state["error"] = str(e)
+                _pipeline_state["log_lines"].append(f"[pipeline] ERROR: {e}")
+        finally:
+            with _pipeline_lock:
+                _pipeline_state["running"] = False
+                _pipeline_state["completed_at"] = datetime.now(timezone.utc).isoformat()
+                if not _pipeline_state["error"]:
+                    _pipeline_state["phase"] = "complete"
+                else:
+                    _pipeline_state["phase"] = "error"
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+
+    return {
+        "status": "started",
+        "job_id": job_id,
+        "address_count": count,
+        "csv_path": str(csv_path),
+        "message": f"Pipeline started for {count} addresses. A browser window will open for PropStream automation.",
+    }
+
+
+def _start_court_records_scrape(
+    runtime: HermesRuntime,
+    body: dict[str, Any],
+) -> dict[str, Any]:
+    """Launch the court-records CLI command as a subprocess with live log streaming."""
+    global _court_records_state
+    import uuid
+
+    with _court_records_lock:
+        if _court_records_state["running"]:
+            return {"status": "error", "message": "Court records scrape already running"}
+
+    county = body.get("county", "Greene")
+    case_type = body.get("case_type", "Probate")
+    days_back = str(body.get("days_back", 7))
+    job_id = uuid.uuid4().hex[:8]
+
+    with _court_records_lock:
+        _court_records_state.update({
+            "running": True,
+            "job_id": job_id,
+            "log_lines": [
+                f"[court-records] Starting scrape: {county} / {case_type} / {days_back} days back",
+            ],
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "completed_at": None,
+            "result": None,
+            "error": None,
+            "phase": "launching",
+        })
+
+    runner_dir = runtime.root.parent / "propstream-runner"
+    tsx_bin = runner_dir / "node_modules" / ".bin" / "tsx"
+
+    def _run():
+        global _court_records_state
+        try:
+            with _court_records_lock:
+                _court_records_state["phase"] = "waiting_for_cloudflare"
+                _court_records_state["log_lines"].append(
+                    "[court-records] A browser window will open — pass the Cloudflare challenge to continue"
+                )
+
+            proc = subprocess.Popen(
+                [str(tsx_bin), "src/index.ts", "court-records", county, case_type, days_back],
+                cwd=str(runner_dir),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            for line in iter(proc.stdout.readline, ""):
+                stripped = line.rstrip()
+                if stripped:
+                    with _court_records_lock:
+                        _court_records_state["log_lines"].append(stripped)
+                        if "case.net ready" in stripped.lower():
+                            _court_records_state["phase"] = "scraping"
+                        elif "cross-referencing" in stripped.lower():
+                            _court_records_state["phase"] = "cross_referencing"
+                        elif "complete" in stripped.lower():
+                            _court_records_state["phase"] = "importing"
+            proc.wait()
+
+            if proc.returncode == 0:
+                with _court_records_lock:
+                    _court_records_state["phase"] = "importing"
+                    _court_records_state["log_lines"].append("[court-records] Scrape complete — importing results...")
+
+                csv_dir = runtime.root.parent / "lead-vault" / "acquisition" / "court-records"
+                county_slug = county.lower().replace(" ", "-")
+                import glob
+                csv_pattern = str(csv_dir / county_slug / "*" / "court-records.csv")
+                csv_files = sorted(glob.glob(csv_pattern), reverse=True)
+
+                if csv_files:
+                    import csv as csv_mod
+                    import io
+                    csv_path = csv_files[0]
+                    with open(csv_path, "r") as f:
+                        reader = csv_mod.DictReader(f)
+                        cases_to_import = []
+                        for row in reader:
+                            cases_to_import.append({
+                                "case_number": row.get("case_number", ""),
+                                "court_id": row.get("court_id", ""),
+                                "case_type": row.get("case_type", "Probate"),
+                                "file_date": row.get("file_date", ""),
+                                "deceased_name": row.get("deceased_name", ""),
+                                "pr_name": row.get("pr_name", ""),
+                                "pr_address": row.get("pr_address", ""),
+                                "pr_role": row.get("pr_role", ""),
+                                "property_address": row.get("property_address", ""),
+                                "property_city": row.get("property_city", ""),
+                                "property_state": row.get("property_state", "MO"),
+                                "property_zip": row.get("property_zip", ""),
+                                "apn": row.get("apn", ""),
+                                "assessed_value": float(row["assessed_value"]) if row.get("assessed_value") else None,
+                                "market_value": float(row["market_value"]) if row.get("market_value") else None,
+                                "match_confidence": row.get("match_confidence", ""),
+                                "case_url": row.get("case_url", ""),
+                            })
+
+                    county_row = runtime.store.list_court_record_counties()
+                    cid = None
+                    for cr in county_row:
+                        if cr["county"].lower() == county.lower():
+                            cid = cr["id"]
+                            break
+
+                    import_result = runtime.store.import_court_record_cases(cases_to_import, county_id=cid)
+                    with _court_records_lock:
+                        _court_records_state["result"] = import_result
+                        _court_records_state["log_lines"].append(
+                            f"[court-records] Imported {import_result['imported']} cases ({import_result['duplicates']} duplicates)"
+                        )
+                else:
+                    with _court_records_lock:
+                        _court_records_state["log_lines"].append("[court-records] No CSV output found")
+            else:
+                with _court_records_lock:
+                    _court_records_state["error"] = f"Court records runner exited with code {proc.returncode}"
+                    _court_records_state["log_lines"].append(
+                        f"[court-records] ERROR: runner exited with code {proc.returncode}"
+                    )
+        except FileNotFoundError:
+            with _court_records_lock:
+                _court_records_state["error"] = (
+                    f"PropStream runner not found at {runner_dir}. "
+                    "Make sure propstream-runner has its dependencies installed (npm install)."
+                )
+                _court_records_state["log_lines"].append(f"[court-records] ERROR: {_court_records_state['error']}")
+        except Exception as e:
+            with _court_records_lock:
+                _court_records_state["error"] = str(e)
+                _court_records_state["log_lines"].append(f"[court-records] ERROR: {e}")
+        finally:
+            with _court_records_lock:
+                _court_records_state["running"] = False
+                _court_records_state["completed_at"] = datetime.now(timezone.utc).isoformat()
+                if not _court_records_state["error"]:
+                    _court_records_state["phase"] = "complete"
+                else:
+                    _court_records_state["phase"] = "error"
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+
+    return {
+        "status": "started",
+        "job_id": job_id,
+        "message": f"Court records scrape started for {county} ({case_type}, {days_back} days back). A browser window will open.",
+    }
 
 
 def serve_in_thread(

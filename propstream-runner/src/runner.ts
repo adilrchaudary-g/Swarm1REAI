@@ -260,6 +260,10 @@ export class PropStreamRunner {
     });
   }
 
+  async importCsvToList(csvPath: string, listName: string) {
+    return this.propstream.importCsvToList({ csvPath, listName });
+  }
+
   get lastExportCsv() { return this.propstream.lastExportCsv; }
 
   async checkSkipTraceBalance(): Promise<{ skip_trace: number | null; saves: number | null; exports: number | null }> {

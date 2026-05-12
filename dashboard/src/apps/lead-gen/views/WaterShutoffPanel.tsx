@@ -186,6 +186,18 @@ function FoiaTracker() {
         </div>
       )}
 
+      {/* Mutation errors */}
+      {(generateLetter.isError || createRequest.isError || updateRequest.isError) && (
+        <div style={{
+          padding: '10px 14px', borderRadius: 6, marginBottom: 12,
+          background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
+        }}>
+          {generateLetter.isError && `Letter generation failed: ${generateLetter.error instanceof Error ? generateLetter.error.message : String(generateLetter.error)}`}
+          {createRequest.isError && `Request creation failed: ${createRequest.error instanceof Error ? createRequest.error.message : String(createRequest.error)}`}
+          {updateRequest.isError && `Request update failed: ${updateRequest.error instanceof Error ? updateRequest.error.message : String(updateRequest.error)}`}
+        </div>
+      )}
+
       {/* Letter modal */}
       {letterText && (
         <div style={{
@@ -339,13 +351,14 @@ function FoiaRequestRow({
               <>
                 <button
                   onClick={(e) => { e.stopPropagation(); onGenerateLetter() }}
+                  disabled={isUpdating}
                   style={{
                     padding: '5px 12px', borderRadius: 4, border: 'none',
                     background: '#6366f1', color: '#fff', fontSize: 11,
-                    fontWeight: 600, cursor: 'pointer',
+                    fontWeight: 600, cursor: 'pointer', opacity: isUpdating ? 0.5 : 1,
                   }}
                 >
-                  Generate Letter
+                  {isUpdating ? 'Generating...' : 'Generate Letter'}
                 </button>
                 <button
                   onClick={(e) => {
@@ -355,10 +368,10 @@ function FoiaRequestRow({
                   disabled={isUpdating}
                   style={{
                     padding: '5px 12px', borderRadius: 4, border: '1px solid #2a2a3e',
-                    background: '#1a1a2e', color: '#aaa', fontSize: 11, cursor: 'pointer',
+                    background: isUpdating ? '#2a2a3e' : '#1a1a2e', color: '#aaa', fontSize: 11, cursor: 'pointer',
                   }}
                 >
-                  Mark as Submitted
+                  {isUpdating ? 'Updating...' : 'Mark as Submitted'}
                 </button>
               </>
             )}
@@ -372,10 +385,10 @@ function FoiaRequestRow({
                   disabled={isUpdating}
                   style={{
                     padding: '5px 12px', borderRadius: 4, border: '1px solid #2a2a3e',
-                    background: '#1a1a2e', color: '#aaa', fontSize: 11, cursor: 'pointer',
+                    background: isUpdating ? '#2a2a3e' : '#1a1a2e', color: '#aaa', fontSize: 11, cursor: 'pointer',
                   }}
                 >
-                  Mark Processing
+                  {isUpdating ? 'Updating...' : 'Mark Processing'}
                 </button>
                 <button
                   onClick={(e) => {
@@ -385,11 +398,11 @@ function FoiaRequestRow({
                   disabled={isUpdating}
                   style={{
                     padding: '5px 12px', borderRadius: 4, border: 'none',
-                    background: '#22c55e', color: '#fff', fontSize: 11,
-                    fontWeight: 600, cursor: 'pointer',
+                    background: isUpdating ? '#16a34a' : '#22c55e', color: '#fff', fontSize: 11,
+                    fontWeight: 600, cursor: 'pointer', opacity: isUpdating ? 0.7 : 1,
                   }}
                 >
-                  Mark Received
+                  {isUpdating ? 'Updating...' : 'Mark Received'}
                 </button>
                 <button
                   onClick={(e) => {
@@ -399,10 +412,10 @@ function FoiaRequestRow({
                   disabled={isUpdating}
                   style={{
                     padding: '5px 12px', borderRadius: 4, border: '1px solid #3a1a1a',
-                    background: '#1f0f0f', color: '#ef4444', fontSize: 11, cursor: 'pointer',
+                    background: isUpdating ? '#2a0f0f' : '#1f0f0f', color: '#ef4444', fontSize: 11, cursor: 'pointer',
                   }}
                 >
-                  Denied
+                  {isUpdating ? 'Updating...' : 'Denied'}
                 </button>
               </>
             )}
@@ -415,11 +428,11 @@ function FoiaRequestRow({
                 disabled={isUpdating}
                 style={{
                   padding: '5px 12px', borderRadius: 4, border: 'none',
-                  background: '#22c55e', color: '#fff', fontSize: 11,
-                  fontWeight: 600, cursor: 'pointer',
+                  background: isUpdating ? '#16a34a' : '#22c55e', color: '#fff', fontSize: 11,
+                  fontWeight: 600, cursor: 'pointer', opacity: isUpdating ? 0.7 : 1,
                 }}
               >
-                Mark Received
+                {isUpdating ? 'Updating...' : 'Mark Received'}
               </button>
             )}
             {(req.status === 'received' || req.file_received) && (
@@ -550,6 +563,15 @@ function ImportView() {
           Paste CSV data from the file you received. The system auto-detects common column names:
           address, account holder/owner, shutoff/disconnect date, amount/balance, city, state, zip.
         </div>
+
+        {importRecords.isError && (
+          <div style={{
+            padding: '10px 14px', borderRadius: 6, marginBottom: 14,
+            background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
+          }}>
+            Import failed: {importRecords.error instanceof Error ? importRecords.error.message : String(importRecords.error)}
+          </div>
+        )}
 
         {importResult && (
           <div style={{
@@ -832,6 +854,16 @@ function RecordsView() {
           )}
         </div>
       </div>
+
+      {(ingestRecords.isError || ingestAll.isError) && (
+        <div style={{
+          padding: '10px 14px', borderRadius: 6, marginBottom: 12,
+          background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
+        }}>
+          {ingestRecords.isError && `Ingest failed: ${ingestRecords.error instanceof Error ? ingestRecords.error.message : String(ingestRecords.error)}`}
+          {ingestAll.isError && `Ingest failed: ${ingestAll.error instanceof Error ? ingestAll.error.message : String(ingestAll.error)}`}
+        </div>
+      )}
 
       {ingestResult && (
         <div style={{

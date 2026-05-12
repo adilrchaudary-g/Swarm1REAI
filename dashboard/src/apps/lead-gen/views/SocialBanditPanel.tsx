@@ -131,15 +131,17 @@ function CommentInbox() {
             <span style={{ fontSize: 11, color: '#888' }}>{selected.size} selected</span>
             <button
               onClick={() => bulkClassify.mutate({ ids: [...selected], status: 'qualified' })}
-              style={{ padding: '5px 10px', borderRadius: 4, border: 'none', background: '#22c55e30', color: '#22c55e', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}
+              disabled={bulkClassify.isPending}
+              style={{ padding: '5px 10px', borderRadius: 4, border: 'none', background: bulkClassify.isPending ? '#22c55e50' : '#22c55e30', color: '#22c55e', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}
             >
-              Qualify
+              {bulkClassify.isPending ? 'Qualifying...' : 'Qualify'}
             </button>
             <button
               onClick={() => bulkClassify.mutate({ ids: [...selected], status: 'junk' })}
-              style={{ padding: '5px 10px', borderRadius: 4, border: 'none', background: '#ef444430', color: '#ef4444', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}
+              disabled={bulkClassify.isPending}
+              style={{ padding: '5px 10px', borderRadius: 4, border: 'none', background: bulkClassify.isPending ? '#ef444450' : '#ef444430', color: '#ef4444', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}
             >
-              Junk
+              {bulkClassify.isPending ? 'Junking...' : 'Junk'}
             </button>
             <button
               onClick={() => ingest.mutate([...selected])}
@@ -167,6 +169,17 @@ function CommentInbox() {
         </div>
       )}
 
+      {(classify.isError || bulkClassify.isError || ingest.isError) && (
+        <div style={{
+          padding: '8px 14px', borderRadius: 6, marginBottom: 8,
+          background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
+        }}>
+          {classify.isError && `Classify failed: ${classify.error instanceof Error ? classify.error.message : String(classify.error)}`}
+          {bulkClassify.isError && `Bulk classify failed: ${bulkClassify.error instanceof Error ? bulkClassify.error.message : String(bulkClassify.error)}`}
+          {ingest.isError && `Ingest failed: ${ingest.error instanceof Error ? ingest.error.message : String(ingest.error)}`}
+        </div>
+      )}
+
       {isLoading && <div style={{ color: '#666', fontSize: 13 }}>Loading comments...</div>}
 
       {/* Comment list */}
@@ -178,6 +191,7 @@ function CommentInbox() {
             selected={selected.has(comment.id)}
             onToggle={() => toggleSelect(comment.id)}
             onClassify={(status) => classify.mutate({ id: comment.id, status })}
+            classifyPending={classify.isPending}
           />
         ))}
       </div>
@@ -207,11 +221,13 @@ function CommentRow({
   selected,
   onToggle,
   onClassify,
+  classifyPending,
 }: {
   comment: SocialComment
   selected: boolean
   onToggle: () => void
   onClassify: (status: string) => void
+  classifyPending?: boolean
 }) {
   const [expanded, setExpanded] = useState(false)
   const queryClient = useQueryClient()
@@ -314,13 +330,13 @@ function CommentRow({
           {/* Action row */}
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
             {comment.status !== 'qualified' && (
-              <button onClick={() => onClassify('qualified')} style={actionBtnStyle('#22c55e')}>
-                Qualify
+              <button onClick={() => onClassify('qualified')} disabled={classifyPending} style={{ ...actionBtnStyle('#22c55e'), opacity: classifyPending ? 0.5 : 1 }}>
+                {classifyPending ? '...' : 'Qualify'}
               </button>
             )}
             {comment.status !== 'junk' && (
-              <button onClick={() => onClassify('junk')} style={actionBtnStyle('#ef4444')}>
-                Junk
+              <button onClick={() => onClassify('junk')} disabled={classifyPending} style={{ ...actionBtnStyle('#ef4444'), opacity: classifyPending ? 0.5 : 1 }}>
+                {classifyPending ? '...' : 'Junk'}
               </button>
             )}
             <button
@@ -472,6 +488,15 @@ function CampaignsView() {
 
       {showCreate && <CreateCampaignForm onDone={() => setShowCreate(false)} />}
 
+      {(toggle.isError || create?.isError) && (
+        <div style={{
+          padding: '8px 14px', borderRadius: 6, marginBottom: 12,
+          background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
+        }}>
+          {toggle.isError && `Toggle failed: ${toggle.error instanceof Error ? toggle.error.message : String(toggle.error)}`}
+        </div>
+      )}
+
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 12 }}>
         {(campaigns || []).map((c) => (
           <div key={c.id} style={{
@@ -482,14 +507,16 @@ function CampaignsView() {
               <span style={{ color: '#e0e0e0', fontSize: 14, fontWeight: 600 }}>{c.campaign_name}</span>
               <button
                 onClick={() => toggle.mutate({ id: c.id, active: !c.active })}
+                disabled={toggle.isPending}
                 style={{
                   padding: '3px 8px', borderRadius: 3, border: 'none',
                   background: c.active ? '#22c55e20' : '#ef444420',
                   color: c.active ? '#22c55e' : '#ef4444',
-                  cursor: 'pointer', fontSize: 10, fontWeight: 600,
+                  cursor: toggle.isPending ? 'wait' : 'pointer', fontSize: 10, fontWeight: 600,
+                  opacity: toggle.isPending ? 0.5 : 1,
                 }}
               >
-                {c.active ? 'Active' : 'Paused'}
+                {toggle.isPending ? '...' : c.active ? 'Active' : 'Paused'}
               </button>
             </div>
             <div style={{ fontSize: 11, color: '#666', marginBottom: 6 }}>
@@ -586,6 +613,14 @@ function CreateCampaignForm({ onDone }: { onDone: () => void }) {
         >
           {create.isPending ? 'Creating...' : 'Create Campaign'}
         </button>
+        {create.isError && (
+          <div style={{
+            padding: '6px 10px', borderRadius: 4, marginTop: 6,
+            background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 11,
+          }}>
+            Failed: {create.error instanceof Error ? create.error.message : String(create.error)}
+          </div>
+        )}
       </div>
     </div>
   )
@@ -679,6 +714,15 @@ Bob Wilson: I have a property on Oak Ave I need gone ASAP`}
             }}
           />
         </div>
+
+        {importComments.isError && (
+          <div style={{
+            padding: '8px 14px', borderRadius: 6, marginBottom: 12,
+            background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
+          }}>
+            Import failed: {importComments.error instanceof Error ? importComments.error.message : String(importComments.error)}
+          </div>
+        )}
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <button

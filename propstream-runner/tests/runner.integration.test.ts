@@ -350,6 +350,8 @@ describe("runner integration", () => {
         sessionRefreshMarginMs: 3_600_000,
         chromeCookiesDbPath: path.join(runtimeRoot, "chrome-source", "Default", "Cookies"),
         cookieStorePath: path.join(runtimeRoot, "cookie-store.json"),
+        caseNetBaseUrl: "https://www.courts.mo.gov/cnet",
+        courtRecordsArchiveRoot: path.join(runtimeRoot, "court-records"),
       };
 
       const runner = await PropStreamRunner.create(config);
@@ -439,6 +441,8 @@ describe("runner integration", () => {
       sessionRefreshMarginMs: 3_600_000,
       chromeCookiesDbPath: path.join(runtimeRoot, "chrome-source", "Default", "Cookies"),
       cookieStorePath: path.join(runtimeRoot, "cookie-store.json"),
+      caseNetBaseUrl: "https://www.courts.mo.gov/cnet",
+      courtRecordsArchiveRoot: path.join(runtimeRoot, "court-records"),
     };
 
     const runner = await PropStreamRunner.create(config);

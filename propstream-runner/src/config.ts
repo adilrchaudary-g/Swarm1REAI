@@ -59,6 +59,8 @@ export type RunnerConfig = {
   sessionRefreshMarginMs: number;
   chromeCookiesDbPath: string;
   cookieStorePath: string;
+  caseNetBaseUrl: string;
+  courtRecordsArchiveRoot: string;
 };
 
 export function loadConfig(): RunnerConfig {
@@ -127,5 +129,9 @@ export function loadConfig(): RunnerConfig {
         "Cookies",
       ),
     cookieStorePath: path.join(runtimeRoot, "cookie-store.json"),
+    caseNetBaseUrl: process.env.CASENET_BASE_URL || "https://www.courts.mo.gov/cnet",
+    courtRecordsArchiveRoot:
+      process.env.COURT_RECORDS_ARCHIVE_ROOT ||
+      path.join(repoRoot, "lead-vault", "acquisition", "court-records"),
   };
 }
