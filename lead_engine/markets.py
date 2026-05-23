@@ -72,17 +72,79 @@ class Market:
 
 
 MARKETS: list[Market] = [
+    # ── HOT TIER (scouted score 70+) ─────────────────────────
+    Market(
+        metro="Detroit", state="MI", counties=["Wayne", "Oakland", "Macomb"],
+        median_price=175_000, population=4_300_000, cash_buyer_pct=0.38,
+        has_code_portal=True, portal_id="detroit_mi",
+        notes="Scouted: Wayne 644 + Macomb 358k distressed. Ultra-affordable, highest cash buyer %",
+    ),
+    Market(
+        metro="Kansas City", state="MO", counties=["Jackson", "Clay", "Platte"],
+        median_price=246_000, population=2_200_000, cash_buyer_pct=0.27,
+        has_code_portal=True, portal_id="kansas_city_mo",
+        notes="Scouted: Jackson 314k distressed. Strong rental market, code portal live",
+    ),
+    Market(
+        metro="Houston", state="TX", counties=["Harris", "Fort Bend", "Montgomery"],
+        median_price=281_000, population=7_100_000, cash_buyer_pct=0.26,
+        has_code_portal=True, portal_id="chicago_il",
+        notes="Scouted: Harris 1.6M pre-foreclosure. Largest distressed volume in nation",
+    ),
+    Market(
+        metro="San Antonio", state="TX", counties=["Bexar", "Comal", "Guadalupe"],
+        median_price=257_000, population=2_600_000, cash_buyer_pct=0.25,
+        has_code_portal=False,
+        notes="Scouted: Bexar 751k distressed. Massive pre-foreclosure pipeline",
+    ),
+    Market(
+        metro="Jacksonville", state="FL", counties=["Duval", "St. Johns", "Clay"],
+        median_price=293_000, population=1_650_000, cash_buyer_pct=0.30,
+        has_code_portal=False,
+        notes="Scouted: Duval 419k distressed. High cash buyer %, no state income tax",
+    ),
+    Market(
+        metro="St. Louis", state="MO", counties=["St. Louis city", "St. Louis County"],
+        median_price=177_000, population=1_269_000, cash_buyer_pct=0.27,
+        has_code_portal=False,
+        notes="Scouted: city 148k + county 29k distressed. Very affordable metro",
+    ),
+    Market(
+        metro="Wichita", state="KS", counties=["Sedgwick"],
+        median_price=223_000, population=528_000, cash_buyer_pct=0.25,
+        has_code_portal=False,
+        notes="Scouted: 26k distressed. Affordable Midwest, score 79",
+    ),
+    Market(
+        metro="El Paso", state="TX", counties=["El Paso"],
+        median_price=231_000, population=870_000, cash_buyer_pct=0.22,
+        has_code_portal=False,
+        notes="Scouted: 123k distressed. Heavy tax delinquent + probate signals",
+    ),
+    Market(
+        metro="Macon", state="GA", counties=["Bibb"],
+        median_price=168_000, population=157_000, cash_buyer_pct=0.28,
+        has_code_portal=False,
+        notes="Scouted: 74k distressed. Ultra-affordable, strong signals for size",
+    ),
+    Market(
+        metro="Lakeland", state="FL", counties=["Polk"],
+        median_price=298_000, population=818_000, cash_buyer_pct=0.28,
+        has_code_portal=False,
+        notes="Scouted: 7.9k distressed. Growing FL market, good price point",
+    ),
+    # ── EXISTING MARKETS (updated with scouted intel) ────────
     Market(
         metro="Cincinnati", state="OH", counties=["Hamilton", "Butler", "Warren"],
         median_price=210_000, population=2_250_000, cash_buyer_pct=0.28,
         has_code_portal=True, portal_id="cincinnati_oh",
-        notes="Strong Socrata portal, high violation volume",
+        notes="Strong Socrata portal, high violation volume. OH now high-friction",
     ),
     Market(
         metro="Cleveland", state="OH", counties=["Cuyahoga", "Lake", "Lorain"],
         median_price=130_000, population=2_050_000, cash_buyer_pct=0.35,
         has_code_portal=True, portal_id="cleveland_oh",
-        notes="Very affordable, high cash buyer %, ArcGIS portal",
+        notes="Very affordable, high cash buyer %, ArcGIS portal. OH now high-friction",
     ),
     Market(
         metro="Fort Worth", state="TX", counties=["Tarrant", "Parker", "Johnson"],
@@ -103,34 +165,16 @@ MARKETS: list[Market] = [
         notes="Largest TX metro, no active code violation portal",
     ),
     Market(
-        metro="Houston", state="TX", counties=["Harris", "Fort Bend", "Montgomery"],
-        median_price=260_000, population=7_100_000, cash_buyer_pct=0.26,
-        has_code_portal=False,
-        notes="Massive market, potential Socrata portal (needs research)",
-    ),
-    Market(
-        metro="San Antonio", state="TX", counties=["Bexar", "Comal", "Guadalupe"],
-        median_price=240_000, population=2_600_000, cash_buyer_pct=0.25,
-        has_code_portal=False,
-        notes="Affordable TX metro, good price point",
-    ),
-    Market(
         metro="Columbus", state="OH", counties=["Franklin", "Delaware", "Licking"],
         median_price=230_000, population=2_150_000, cash_buyer_pct=0.23,
         has_code_portal=False,
-        notes="Steady growth, investor-friendly state",
-    ),
-    Market(
-        metro="Jacksonville", state="FL", counties=["Duval", "St. Johns", "Clay"],
-        median_price=280_000, population=1_650_000, cash_buyer_pct=0.30,
-        has_code_portal=False,
-        notes="High cash buyer %, no state income tax",
+        notes="Steady growth. OH now high-friction",
     ),
     Market(
         metro="Memphis", state="TN", counties=["Shelby"],
         median_price=150_000, population=1_350_000, cash_buyer_pct=0.32,
         has_code_portal=False,
-        notes="Very affordable, high cash buyers, but TN is high-friction",
+        notes="Very affordable, high cash buyers, TN is high-friction",
     ),
     Market(
         metro="Atlanta", state="GA", counties=["Fulton", "DeKalb", "Gwinnett", "Cobb"],
@@ -145,22 +189,47 @@ MARKETS: list[Market] = [
         notes="Hot FL market, good cash buyer presence",
     ),
     Market(
-        metro="Kansas City", state="MO", counties=["Jackson", "Clay", "Platte"],
-        median_price=220_000, population=2_200_000, cash_buyer_pct=0.27,
+        metro="Montgomery", state="AL", counties=["Montgomery"],
+        median_price=165_000, population=225_000, cash_buyer_pct=0.25,
         has_code_portal=False,
-        notes="Affordable, strong rental market",
-    ),
-    Market(
-        metro="Detroit", state="MI", counties=["Wayne", "Oakland", "Macomb"],
-        median_price=120_000, population=4_300_000, cash_buyer_pct=0.38,
-        has_code_portal=False,
-        notes="Ultra-affordable, highest cash buyer % — check for portal",
+        notes="Scouted: 112k distressed. Affordable but AL is high-friction",
     ),
     Market(
         metro="Birmingham", state="AL", counties=["Jefferson", "Shelby"],
         median_price=170_000, population=1_150_000, cash_buyer_pct=0.30,
         has_code_portal=False,
-        notes="Low prices, high cash buyers, investor-friendly",
+        notes="Low prices, high cash buyers. AL is high-friction",
+    ),
+    # ── NEWLY DISCOVERED (scouted, need further evaluation) ──
+    Market(
+        metro="Shreveport", state="LA", counties=["Caddo"],
+        median_price=141_000, population=226_000, cash_buyer_pct=0.25,
+        has_code_portal=False,
+        notes="Scouted: Caddo Parish awaiting results. Ultra-affordable LA market",
+    ),
+    Market(
+        metro="Jackson", state="MS", counties=["Hinds"],
+        median_price=133_000, population=215_000, cash_buyer_pct=0.28,
+        has_code_portal=False,
+        notes="Scouted: Hinds 5.9k distressed. Very affordable, good signals",
+    ),
+    Market(
+        metro="Beaumont", state="TX", counties=["Jefferson"],
+        median_price=169_000, population=251_000, cash_buyer_pct=0.24,
+        has_code_portal=False,
+        notes="Scouted: 31k distressed. Affordable TX coastal market",
+    ),
+    Market(
+        metro="Charleston", state="WV", counties=["Kanawha"],
+        median_price=151_000, population=175_000, cash_buyer_pct=0.26,
+        has_code_portal=False,
+        notes="Scouted: 30k distressed (25k tax delinquent, 5k probate). Affordable Appalachia",
+    ),
+    Market(
+        metro="Hidalgo", state="TX", counties=["Hidalgo"],
+        median_price=194_000, population=898_000, cash_buyer_pct=0.20,
+        has_code_portal=False,
+        notes="Scouted: 62k distressed. Large TX border metro, strong tax delinquent signal",
     ),
 ]
 

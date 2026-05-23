@@ -1,11 +1,10 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { hermesClient } from '../../../api/hermes-client'
 import type { FsboListing } from '../../../api/types'
 
-type SubView = 'listings' | 'import' | 'markets'
+type SubView = 'listings' | 'markets'
 
-// Pre-configured target markets with median prices and Zillow FSBO search URLs
 const MARKET_PRESETS: { metro: string; state: string; median_price: number; zillow_search_url: string }[] = [
   { metro: 'Cincinnati', state: 'OH', median_price: 230000, zillow_search_url: 'https://www.zillow.com/cincinnati-oh/fsbo/' },
   { metro: 'Columbus', state: 'OH', median_price: 270000, zillow_search_url: 'https://www.zillow.com/columbus-oh/fsbo/' },
@@ -20,6 +19,8 @@ const MARKET_PRESETS: { metro: string; state: string; median_price: number; zill
   { metro: 'Austin', state: 'TX', median_price: 450000, zillow_search_url: 'https://www.zillow.com/austin-tx/fsbo/' },
 ]
 
+// statusPulse keyframe is in index.css
+
 export function FsboPanel() {
   const [subView, setSubView] = useState<SubView>('listings')
 
@@ -28,7 +29,6 @@ export function FsboPanel() {
       <div style={{ display: 'flex', gap: 6, marginBottom: 20 }}>
         {([
           { id: 'listings' as const, label: 'Listings' },
-          { id: 'import' as const, label: 'Import Listings' },
           { id: 'markets' as const, label: 'Markets' },
         ]).map((tab) => (
           <button
@@ -48,7 +48,6 @@ export function FsboPanel() {
       </div>
 
       {subView === 'listings' && <ListingsView />}
-      {subView === 'import' && <ImportView />}
       {subView === 'markets' && <MarketsView />}
     </div>
   )
@@ -75,6 +74,35 @@ function ListingsView() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [expandedId, setExpandedId] = useState<number | null>(null)
   const [ingestResult, setIngestResult] = useState<{ leads_created: number; ingested: number } | null>(null)
+  const [scrapeOpen, setScrapeOpen] = useState(false)
+  const logEndRef = useRef<HTMLDivElement>(null)
+
+  const scrape = useMutation({
+    mutationFn: () => hermesClient.fsbo.scrape(),
+    onMutate: () => setScrapeOpen(true),
+  })
+
+  const { data: scrapeStatus } = useQuery({
+    queryKey: ['fsbo-scrape-status'],
+    queryFn: hermesClient.fsbo.scrapeStatus,
+    refetchInterval: scrapeOpen ? 2000 : false,
+    enabled: scrapeOpen,
+  })
+
+  useEffect(() => {
+    if (scrapeStatus && !scrapeStatus.running && scrapeStatus.phase === 'complete') {
+      queryClient.invalidateQueries({ queryKey: ['fsbo-listings'] })
+      queryClient.invalidateQueries({ queryKey: ['fsbo-stats'] })
+      queryClient.invalidateQueries({ queryKey: ['fsbo-markets'] })
+      queryClient.invalidateQueries({ queryKey: ['pipeline-stats'] })
+    }
+  }, [scrapeStatus?.running, scrapeStatus?.phase, queryClient])
+
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [scrapeStatus?.log_lines?.length])
+
+  const isRunning = scrapeStatus?.running || scrape.isPending
 
   const { data: listings, isLoading } = useQuery({
     queryKey: ['fsbo-listings', statusFilter, sortBy],
@@ -152,6 +180,105 @@ function ListingsView() {
 
   return (
     <div>
+      {/* Scrape banner */}
+      <div style={{
+        marginBottom: 16, padding: '12px 14px',
+        background: isRunning ? '#6366f110' : '#111118',
+        border: `1px solid ${isRunning ? '#6366f130' : '#1e1e2e'}`,
+        borderRadius: 8,
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <span style={{ color: '#e0e0e0', fontSize: 13, fontWeight: 600 }}>
+              Zillow FSBO Scraper
+            </span>
+            <div style={{ color: '#888', fontSize: 11, marginTop: 2 }}>
+              {isRunning
+                ? 'Scraping active markets — watch progress below.'
+                : 'Scrape all active markets, auto-score, and ingest qualified leads.'}
+            </div>
+          </div>
+          <button
+            onClick={() => {
+              if (isRunning) {
+                setScrapeOpen((o) => !o)
+              } else {
+                scrape.mutate()
+              }
+            }}
+            disabled={scrape.isPending}
+            style={{
+              padding: '7px 18px', borderRadius: 6, border: 'none',
+              fontSize: 12, fontWeight: 700, cursor: 'pointer',
+              color: isRunning ? '#eab308' : '#fff',
+              background: isRunning ? '#eab30818' : '#6366f1',
+            }}
+          >
+            {scrape.isPending
+              ? 'Starting...'
+              : isRunning
+                ? (scrapeOpen ? 'Hide Log' : 'Show Log')
+                : 'Scrape FSBOs'}
+          </button>
+        </div>
+
+        {scrape.isError && (
+          <div style={{ padding: '6px 10px', borderRadius: 4, marginTop: 8, background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 11 }}>
+            Failed: {scrape.error instanceof Error ? scrape.error.message : String(scrape.error)}
+          </div>
+        )}
+
+        {scrapeOpen && (
+          <div style={{ marginTop: 10 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{
+                  display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+                  background: isRunning ? '#22c55e' : (scrapeStatus?.error ? '#ef4444' : '#22c55e'),
+                  animation: isRunning ? 'statusPulse 1.5s ease-in-out infinite' : 'none',
+                }} />
+                <span style={{ color: '#aaa', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                  {scrape.isPending && 'Starting...'}
+                  {scrapeStatus?.phase === 'launching' && 'Launching browser...'}
+                  {scrapeStatus?.phase === 'waiting_for_browser' && 'Waiting for browser...'}
+                  {scrapeStatus?.phase === 'scraping' && 'Scraping listings...'}
+                  {scrapeStatus?.phase === 'enriching' && 'Enriching detail pages...'}
+                  {scrapeStatus?.phase === 'importing' && 'Importing to database...'}
+                  {scrapeStatus?.phase === 'ingesting' && 'Auto-ingesting leads...'}
+                  {scrapeStatus?.phase === 'complete' && 'Complete'}
+                  {scrapeStatus?.phase === 'error' && 'Failed'}
+                  {!scrape.isPending && scrapeStatus?.phase === 'idle' && 'Idle'}
+                  {!scrape.isPending && !scrapeStatus && 'Connecting...'}
+                </span>
+              </div>
+              {!isRunning && (
+                <button
+                  onClick={() => setScrapeOpen(false)}
+                  style={{ background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: 14 }}
+                >&times;</button>
+              )}
+            </div>
+            <div className={`log-tablet${isRunning ? ' active' : scrapeStatus?.error ? ' error' : scrapeStatus?.phase === 'complete' ? ' complete' : ''}`}>
+              {(scrapeStatus?.log_lines || []).map((line, i) => (
+                <div key={i} style={{
+                  color: line.includes('ERROR') ? '#ef4444'
+                    : line.includes('[zillow]') ? '#6366f1'
+                      : line.includes('Imported') ? '#22c55e'
+                        : line.includes('Auto-ingest') ? '#eab308'
+                          : '#888',
+                }}>{line}</div>
+              ))}
+              <div ref={logEndRef} />
+            </div>
+            {scrapeStatus?.error && (
+              <div style={{ marginTop: 6, padding: '6px 10px', background: '#ef444418', borderRadius: 4, color: '#ef4444', fontSize: 11 }}>
+                {scrapeStatus.error}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
       {/* Stats bar */}
       {stats && (
         <div style={{ display: 'flex', gap: 20, marginBottom: 20 }}>
@@ -294,7 +421,7 @@ function ListingsView() {
       {/* Listing cards */}
       {(!listings || listings.length === 0) ? (
         <div style={{ color: '#555', fontSize: 13, padding: 20, textAlign: 'center' }}>
-          No FSBO listings found. Go to Import Listings to add data.
+          No FSBO listings found. Click "Scrape FSBOs" above to pull listings from Zillow.
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -534,396 +661,6 @@ function DetailRow({ label, value }: { label: string; value: string }) {
       <span style={{ color: '#ccc' }}>{value}</span>
     </div>
   )
-}
-
-/* ── Import View ───────────────────────────────────────────── */
-
-function ImportView() {
-  const queryClient = useQueryClient()
-  const [pastedData, setPastedData] = useState('')
-  const [parsedListings, setParsedListings] = useState<Record<string, string>[]>([])
-  const [importResult, setImportResult] = useState<{ imported: number; duplicates: number; scored: number } | null>(null)
-  const [marketMetro, setMarketMetro] = useState('')
-  const [marketState, setMarketState] = useState('OH')
-
-  const importListings = useMutation({
-    mutationFn: () =>
-      hermesClient.fsbo.import({
-        listings: parsedListings,
-        market_metro: marketMetro || undefined,
-        market_state: marketState || undefined,
-      }),
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['fsbo-listings'] })
-      queryClient.invalidateQueries({ queryKey: ['fsbo-stats'] })
-      queryClient.invalidateQueries({ queryKey: ['fsbo-markets'] })
-      setImportResult(data)
-      setPastedData('')
-      setParsedListings([])
-    },
-  })
-
-  function parseInput(text: string) {
-    const trimmed = text.trim()
-    if (!trimmed) return []
-
-    // Try CSV first
-    const lines = trimmed.split('\n')
-    if (lines.length >= 2 && lines[0].includes(',')) {
-      return parseCsv(lines)
-    }
-
-    // Try structured listing blocks (Zillow copy-paste format)
-    return parseListingBlocks(trimmed)
-  }
-
-  function parseCsv(lines: string[]): Record<string, string>[] {
-    const headers = lines[0].split(',').map((h) => h.trim().replace(/^"|"$/g, '').toLowerCase())
-    const rows: Record<string, string>[] = []
-
-    for (let i = 1; i < lines.length; i++) {
-      const line = lines[i].trim()
-      if (!line) continue
-
-      const values: string[] = []
-      let current = ''
-      let inQuotes = false
-      for (const char of line) {
-        if (char === '"') {
-          inQuotes = !inQuotes
-        } else if (char === ',' && !inQuotes) {
-          values.push(current.trim())
-          current = ''
-        } else {
-          current += char
-        }
-      }
-      values.push(current.trim())
-
-      const row: Record<string, string> = {}
-      headers.forEach((h, idx) => {
-        row[h] = values[idx] || ''
-      })
-
-      // Normalize header variations
-      const normalized: Record<string, string> = {}
-      for (const [k, v] of Object.entries(row)) {
-        if (/address|location|street/i.test(k) && !normalized['address']) normalized['address'] = v
-        else if (/asking.?price|price|list.?price/i.test(k) && !normalized['asking_price']) normalized['asking_price'] = v
-        else if (/original.?price|starting.?price/i.test(k)) normalized['original_price'] = v
-        else if (/zestimate/i.test(k)) normalized['zestimate'] = v
-        else if (/days?.?on.?market|dom/i.test(k)) normalized['days_on_market'] = v
-        else if (/price.?drop|price.?change|price.?reduction|drops/i.test(k)) normalized['price_drops'] = v
-        else if (/bed|bedroom/i.test(k)) normalized['bedrooms'] = v
-        else if (/bath|bathroom/i.test(k)) normalized['bathrooms'] = v
-        else if (/sq\s*ft|sqft|square.?f/i.test(k)) normalized['sqft'] = v
-        else if (/lot/i.test(k)) normalized['lot_sqft'] = v
-        else if (/year.?built|built/i.test(k)) normalized['year_built'] = v
-        else if (/photo|image/i.test(k)) normalized['photo_count'] = v
-        else if (/desc/i.test(k)) normalized['description'] = v
-        else if (/url|link|zillow/i.test(k)) normalized['zillow_url'] = v
-        else if (/city/i.test(k)) normalized['city'] = v
-        else if (/state/i.test(k)) normalized['state'] = v
-        else if (/zip|postal/i.test(k)) normalized['zip'] = v
-      }
-
-      if (normalized['address']) rows.push(normalized)
-    }
-    return rows
-  }
-
-  function parseListingBlocks(text: string): Record<string, string>[] {
-    // Parse Zillow-style listing blocks separated by blank lines
-    // Pattern: address line, price line, details line (beds/baths/sqft), description
-    const blocks = text.split(/\n\s*\n/)
-    const results: Record<string, string>[] = []
-
-    for (const block of blocks) {
-      const lines = block.trim().split('\n').map((l) => l.trim()).filter(Boolean)
-      if (lines.length === 0) continue
-
-      const listing: Record<string, string> = {}
-
-      for (const line of lines) {
-        // Address: starts with a number
-        if (/^\d+\s/.test(line) && !listing['address']) {
-          // Could be "123 Main St, City, ST 12345" or just "123 Main St"
-          const parts = line.split(',').map((p) => p.trim())
-          listing['address'] = parts[0]
-          if (parts.length >= 3) {
-            listing['city'] = parts[1]
-            const stateZip = parts[2].match(/([A-Z]{2})\s*(\d{5})?/)
-            if (stateZip) {
-              listing['state'] = stateZip[1]
-              if (stateZip[2]) listing['zip'] = stateZip[2]
-            }
-          } else if (parts.length === 2) {
-            const cityStateZip = parts[1].match(/(.+?)\s+([A-Z]{2})\s*(\d{5})?/)
-            if (cityStateZip) {
-              listing['city'] = cityStateZip[1].trim()
-              listing['state'] = cityStateZip[2]
-              if (cityStateZip[3]) listing['zip'] = cityStateZip[3]
-            }
-          }
-          continue
-        }
-
-        // Price: starts with $ or contains price-like pattern
-        const priceMatch = line.match(/\$[\d,]+/)
-        if (priceMatch && !listing['asking_price']) {
-          listing['asking_price'] = priceMatch[0].replace(/[$,]/g, '')
-
-          // Check for "was $X" or "reduced from $X"
-          const origMatch = line.match(/(?:was|from|original|reduced from)\s*\$([\d,]+)/i)
-          if (origMatch) {
-            listing['original_price'] = origMatch[1].replace(/,/g, '')
-          }
-
-          // Check for Zestimate in same line
-          const zestMatch = line.match(/zestimate[:\s]*\$([\d,]+)/i)
-          if (zestMatch) {
-            listing['zestimate'] = zestMatch[1].replace(/,/g, '')
-          }
-          continue
-        }
-
-        // Beds/baths/sqft line: "3 bd | 2 ba | 1,500 sqft" or "3bd 2ba 1500sqft"
-        const bedMatch = line.match(/(\d+\.?\d*)\s*(?:bd|bed|bedroom)/i)
-        const bathMatch = line.match(/(\d+\.?\d*)\s*(?:ba|bath|bathroom)/i)
-        const sqftMatch = line.match(/([\d,]+)\s*(?:sqft|sq\s*ft|square\s*f)/i)
-        if (bedMatch || bathMatch || sqftMatch) {
-          if (bedMatch) listing['bedrooms'] = bedMatch[1]
-          if (bathMatch) listing['bathrooms'] = bathMatch[1]
-          if (sqftMatch) listing['sqft'] = sqftMatch[1].replace(/,/g, '')
-          continue
-        }
-
-        // DOM line
-        const domMatch = line.match(/(\d+)\s*(?:days?\s*on\s*market|dom|days?\s*listed|days?\s*on\s*zillow)/i)
-        if (domMatch) {
-          listing['days_on_market'] = domMatch[1]
-          continue
-        }
-
-        // Price drops
-        const dropMatch = line.match(/(\d+)\s*(?:price\s*drop|price\s*change|reduction|cut)/i)
-        if (dropMatch) {
-          listing['price_drops'] = dropMatch[1]
-          continue
-        }
-
-        // Zillow URL
-        if (line.includes('zillow.com')) {
-          const urlMatch = line.match(/(https?:\/\/www\.zillow\.com\/\S+)/)
-          if (urlMatch) listing['zillow_url'] = urlMatch[1]
-          continue
-        }
-
-        // Everything else could be description
-        if (!listing['description'] && line.length > 20) {
-          listing['description'] = line
-        }
-      }
-
-      if (listing['address']) {
-        results.push(listing)
-      }
-    }
-    return results
-  }
-
-  return (
-    <div>
-      <div style={{
-        background: '#111118', border: '1px solid #1e1e2e', borderRadius: 8,
-        padding: 16, marginBottom: 16,
-      }}>
-        <h4 style={{ color: '#e0e0e0', fontSize: 14, margin: '0 0 10px 0' }}>Import FSBO Listings</h4>
-
-        {/* Market context */}
-        <div style={{ display: 'flex', gap: 10, marginBottom: 14 }}>
-          <div>
-            <label style={{ fontSize: 11, color: '#888', display: 'block', marginBottom: 4 }}>
-              Market (for median price scoring)
-            </label>
-            <select
-              value={`${marketMetro}|${marketState}`}
-              onChange={(e) => {
-                const [m, s] = e.target.value.split('|')
-                setMarketMetro(m)
-                setMarketState(s)
-              }}
-              style={{
-                padding: '6px 10px', borderRadius: 4, border: '1px solid #2a2a3e',
-                background: '#0d0d14', color: '#ccc', fontSize: 12, minWidth: 200,
-              }}
-            >
-              <option value="|">No market selected</option>
-              {MARKET_PRESETS.map((p) => (
-                <option key={`${p.metro}-${p.state}`} value={`${p.metro}|${p.state}`}>
-                  {p.metro}, {p.state} (median: ${p.median_price.toLocaleString()})
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        {importListings.isError && (
-          <div style={{
-            padding: '10px 14px', borderRadius: 6, marginBottom: 14,
-            background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
-          }}>
-            Import failed: {importListings.error instanceof Error ? importListings.error.message : String(importListings.error)}
-          </div>
-        )}
-
-        {importResult && (
-          <div style={{
-            padding: '10px 14px', borderRadius: 6, marginBottom: 14,
-            background: '#0f1f0f', border: '1px solid #1a3a1a',
-            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-          }}>
-            <span style={{ color: '#4ade80', fontSize: 13 }}>
-              Imported <strong>{importResult.imported}</strong> listings ({importResult.duplicates} duplicates, {importResult.scored} scored)
-            </span>
-            <button
-              onClick={() => setImportResult(null)}
-              style={{ background: 'none', border: 'none', color: '#666', cursor: 'pointer', fontSize: 16 }}
-            >&times;</button>
-          </div>
-        )}
-
-        <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
-          Paste CSV data or Zillow listing blocks. The system auto-detects format and scores
-          each listing for distress signals (DOM, price drops, below-median, keywords).
-        </div>
-
-        <textarea
-          value={pastedData}
-          onChange={(e) => {
-            setPastedData(e.target.value)
-            if (e.target.value.trim()) {
-              setParsedListings(parseInput(e.target.value))
-            } else {
-              setParsedListings([])
-            }
-          }}
-          placeholder={`Paste CSV or listing blocks here...
-
-CSV format:
-address,price,days_on_market,price_drops,zestimate,beds,baths,sqft,description,url
-1234 Main St,$185000,95,2,$220000,3,1.5,1200,Must sell - relocating,https://zillow.com/...
-
-Or listing blocks (separated by blank lines):
-1234 Main St, Cleveland, OH 44109
-$185,000 (was $210,000)
-3 bd | 1.5 ba | 1,200 sqft
-95 days on market, 2 price drops
-Must sell - relocating out of state
-https://www.zillow.com/homedetails/...`}
-          style={{
-            width: '100%', minHeight: 200, padding: 12, borderRadius: 6,
-            border: '1px solid #2a2a3e', background: '#0d0d14', color: '#ccc',
-            fontSize: 12, fontFamily: 'monospace', resize: 'vertical',
-          }}
-        />
-
-        {parsedListings.length > 0 && (
-          <div style={{ marginTop: 12 }}>
-            <div style={{ fontSize: 12, color: '#22c55e', marginBottom: 10 }}>
-              Parsed {parsedListings.length} listing{parsedListings.length > 1 ? 's' : ''}
-            </div>
-
-            {/* Preview */}
-            <div style={{
-              maxHeight: 250, overflow: 'auto', border: '1px solid #1a1a2e',
-              borderRadius: 6, marginBottom: 12,
-            }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-                <thead>
-                  <tr style={{ background: '#0d0d14' }}>
-                    <th style={thStyle}>Address</th>
-                    <th style={thStyle}>Price</th>
-                    <th style={thStyle}>DOM</th>
-                    <th style={thStyle}>Drops</th>
-                    <th style={thStyle}>Zestimate</th>
-                    <th style={thStyle}>Beds/Baths</th>
-                    <th style={thStyle}>Sqft</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {parsedListings.slice(0, 15).map((lst, i) => (
-                    <tr key={i} style={{ borderBottom: '1px solid #111118' }}>
-                      <td style={tdStyle}>{lst.address}</td>
-                      <td style={tdStyle}>{lst.asking_price ? `$${Number(lst.asking_price).toLocaleString()}` : '-'}</td>
-                      <td style={tdStyle}>{lst.days_on_market || '-'}</td>
-                      <td style={tdStyle}>{lst.price_drops || '-'}</td>
-                      <td style={tdStyle}>{lst.zestimate ? `$${Number(lst.zestimate).toLocaleString()}` : '-'}</td>
-                      <td style={tdStyle}>{lst.bedrooms || '-'}/{lst.bathrooms || '-'}</td>
-                      <td style={tdStyle}>{lst.sqft ? Number(lst.sqft).toLocaleString() : '-'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {parsedListings.length > 15 && (
-                <div style={{ padding: 6, textAlign: 'center', color: '#555', fontSize: 10 }}>
-                  ... and {parsedListings.length - 15} more
-                </div>
-              )}
-            </div>
-
-            <button
-              onClick={() => importListings.mutate()}
-              disabled={importListings.isPending}
-              style={{
-                padding: '8px 20px', borderRadius: 6, border: 'none',
-                background: importListings.isPending ? '#333' : '#6366f1',
-                color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer',
-              }}
-            >
-              {importListings.isPending ? 'Importing...' : `Import & Score ${parsedListings.length} Listings`}
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* How-to guide */}
-      <div style={{
-        background: '#111118', border: '1px solid #1e1e2e', borderRadius: 8,
-        padding: 16,
-      }}>
-        <h4 style={{ color: '#aaa', fontSize: 13, margin: '0 0 10px 0' }}>How to Get FSBO Data from Zillow</h4>
-        <ol style={{ color: '#666', fontSize: 12, lineHeight: 1.8, paddingLeft: 20, margin: 0 }}>
-          <li>Go to zillow.com and search your target market</li>
-          <li>Click "Listing Type" filter, select only "For Sale by Owner"</li>
-          <li>Sort by "Newest" or "Days on Zillow" to find stale listings</li>
-          <li>For each listing, note: address, price, DOM, price history (drops), Zestimate, bed/bath/sqft</li>
-          <li>Check the description for distress keywords: "must sell", "as-is", "estate", "relocating"</li>
-          <li>Paste into the text area above as CSV or listing blocks</li>
-        </ol>
-
-        <h4 style={{ color: '#aaa', fontSize: 13, margin: '16px 0 8px 0' }}>What the Distress Score Measures</h4>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px 20px', fontSize: 11, color: '#666' }}>
-          <div>90+ days on market: <span style={{ color: '#ef4444' }}>+20-30 pts</span></div>
-          <div>2+ price drops: <span style={{ color: '#ef4444' }}>+15-20 pts</span></div>
-          <div>10%+ below original: <span style={{ color: '#f59e0b' }}>+10-15 pts</span></div>
-          <div>Below median price: <span style={{ color: '#f59e0b' }}>+5-15 pts</span></div>
-          <div>Below Zestimate: <span style={{ color: '#eab308' }}>+5-15 pts</span></div>
-          <div>Low photo count: <span style={{ color: '#888' }}>+3-8 pts</span></div>
-          <div>Distress keywords: <span style={{ color: '#f59e0b' }}>+5-15 pts</span></div>
-          <div>Score 40+ = auto-qualified</div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-const thStyle: React.CSSProperties = {
-  padding: '6px 8px', color: '#888', textAlign: 'left',
-  borderBottom: '1px solid #1a1a2e', fontSize: 10, fontWeight: 600,
-}
-const tdStyle: React.CSSProperties = {
-  padding: '5px 8px', color: '#ccc',
 }
 
 /* ── Markets View ──────────────────────────────────────────── */

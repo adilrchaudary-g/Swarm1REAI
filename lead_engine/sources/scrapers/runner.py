@@ -12,6 +12,7 @@ from typing import Any
 from .portals import PORTALS, VIOLATION_KEYWORDS
 from .socrata import fetch_socrata
 from .arcgis import fetch_arcgis
+from .carto import fetch_carto
 
 from ...config import ACQUISITION_DIR
 
@@ -67,6 +68,13 @@ def _extract_fields(record: dict, field_map: dict, portal: dict) -> dict[str, st
 
 def _is_valuable_violation(record: dict, field_map: dict) -> bool:
     """Filter for violation types that indicate motivated sellers."""
+    VIOLATION_EXCLUSIONS = [
+        "commercial", "apartment", "multi-family", "multifamily",
+        "condo", "hotel", "motel", "church", "school", "hospital",
+        "parking", "vehicle", "sidewalk", "sign", "billboard",
+        "permit", "zoning", "license", "certificate",
+    ]
+
     vtype_field = field_map.get("violation_type", "")
     vsubtype_field = field_map.get("violation_subtype", "")
 
@@ -79,6 +87,10 @@ def _is_valuable_violation(record: dict, field_map: dict) -> bool:
     text = text.lower()
     if not text.strip():
         return True
+
+    # Exclude non-residential and administrative violations
+    if any(exc in text for exc in VIOLATION_EXCLUSIONS):
+        return False
 
     return any(kw in text for kw in VIOLATION_KEYWORDS)
 
@@ -112,6 +124,15 @@ def scrape_portal(
                 date_field=portal.get("date_field", ""),
                 days_back=days_back,
                 limit=limit,
+            )
+        elif portal_type == "carto":
+            raw_records = fetch_carto(
+                portal["base_url"],
+                portal["table_name"],
+                date_field=portal.get("date_field", ""),
+                days_back=days_back,
+                limit=limit,
+                extra_where=portal.get("extra_where", ""),
             )
         else:
             print(f"  SKIP     Unknown portal type: {portal_type}")

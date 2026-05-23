@@ -1,10 +1,9 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { hermesClient } from '../../../api/hermes-client'
-import { SocialBanditPanel } from './SocialBanditPanel'
 import { WaterShutoffPanel } from './WaterShutoffPanel'
-import { FsboPanel } from './FsboPanel'
 import { CourtRecordsPanel } from './CourtRecordsPanel'
+import { CountiesPanel } from './CountiesPanel'
 
 const PORTALS = [
   { id: 'cincinnati_oh', name: 'Cincinnati, OH', type: 'Socrata' },
@@ -23,6 +22,12 @@ export function SourcesPanel() {
     refetchInterval: 30_000,
   })
 
+  const { data: pendingStats } = useQuery({
+    queryKey: ['pending-verification'],
+    queryFn: hermesClient.pendingVerification.stats,
+    refetchInterval: 15_000,
+  })
+
   const runPipeline = useMutation({
     mutationFn: () => hermesClient.pipeline.run(),
     onSuccess: () => {
@@ -32,33 +37,67 @@ export function SourcesPanel() {
     },
   })
 
+  const verifyBatch = useMutation({
+    mutationFn: () => hermesClient.pendingVerification.verifyAll(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['pending-verification'] })
+      queryClient.invalidateQueries({ queryKey: ['pipeline-stats'] })
+      queryClient.invalidateQueries({ queryKey: ['jobs'] })
+    },
+  })
+
   const toggle = (key: string) => setExpanded((prev) => (prev === key ? null : key))
 
   if (isLoading) return <div style={{ color: '#666' }}>Loading sources...</div>
+
+  const pendingCount = pendingStats?.total_pending ?? 0
 
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
         <h2 style={{ color: '#e0e0e0', fontSize: 20, margin: 0 }}>Lead Sources</h2>
-        <button
-          onClick={() => runPipeline.mutate()}
-          disabled={runPipeline.isPending}
-          style={{
-            padding: '8px 16px', borderRadius: 6, border: 'none',
-            background: runPipeline.isPending ? '#333' : '#6366f1',
-            color: '#fff', fontWeight: 600, fontSize: 13, cursor: 'pointer',
-          }}
-        >
-          {runPipeline.isPending ? 'Processing...' : 'Run Full Pipeline'}
-        </button>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button
+            onClick={() => verifyBatch.mutate()}
+            disabled={verifyBatch.isPending || pendingCount === 0}
+            style={{
+              padding: '8px 16px', borderRadius: 6, border: 'none',
+              background: verifyBatch.isPending ? '#333' : pendingCount > 0 ? '#22c55e' : '#222',
+              color: '#fff', fontWeight: 600, fontSize: 13, cursor: pendingCount > 0 ? 'pointer' : 'default',
+            }}
+          >
+            {verifyBatch.isPending ? 'Verifying...' : `Verify All Pending (${pendingCount})`}
+          </button>
+          <button
+            onClick={() => runPipeline.mutate()}
+            disabled={runPipeline.isPending}
+            style={{
+              padding: '8px 16px', borderRadius: 6, border: 'none',
+              background: runPipeline.isPending ? '#333' : '#6366f1',
+              color: '#fff', fontWeight: 600, fontSize: 13, cursor: 'pointer',
+            }}
+          >
+            {runPipeline.isPending ? 'Processing...' : 'Run Full Pipeline'}
+          </button>
+        </div>
       </div>
 
-      {runPipeline.isError && (
+      {verifyBatch.isSuccess && (
+        <div style={{
+          padding: '10px 14px', borderRadius: 6, marginBottom: 12,
+          background: '#0f1f0f', border: '1px solid #1a3a1a', color: '#22c55e', fontSize: 12,
+        }}>
+          Batch verification started. Track progress in the log panel below.
+        </div>
+      )}
+
+      {(runPipeline.isError || verifyBatch.isError) && (
         <div style={{
           padding: '10px 14px', borderRadius: 6, marginBottom: 12,
           background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
         }}>
-          Pipeline failed: {runPipeline.error instanceof Error ? runPipeline.error.message : String(runPipeline.error)}
+          {runPipeline.isError && `Pipeline failed: ${runPipeline.error instanceof Error ? runPipeline.error.message : String(runPipeline.error)}`}
+          {verifyBatch.isError && `Verification failed: ${verifyBatch.error instanceof Error ? verifyBatch.error.message : String(verifyBatch.error)}`}
         </div>
       )}
 
@@ -71,20 +110,47 @@ export function SourcesPanel() {
         </div>
       )}
 
+      {/* Pending Verification Summary */}
+      {pendingStats && pendingStats.by_source && Object.keys(pendingStats.by_source).length > 0 && (
+        <div style={{
+          background: '#111118', border: '1px solid #f59e0b30', borderRadius: 10,
+          padding: '14px 20px', marginBottom: 16,
+        }}>
+          <div style={{ color: '#f59e0b', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+            Pending PropStream Verification
+          </div>
+          <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+            {Object.entries(pendingStats.by_source).map(([source, statuses]) => (
+              <div key={source} style={{ fontSize: 12 }}>
+                <span style={{ color: '#aaa' }}>{source}: </span>
+                {Object.entries(statuses as Record<string, number>).map(([status, count]) => (
+                  <span key={status} style={{
+                    color: status === 'pending' ? '#f59e0b' : status === 'verified' ? '#22c55e' : '#666',
+                    marginRight: 8,
+                  }}>
+                    {count} {status}
+                  </span>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Background Jobs Log */}
+      <BackgroundJobsPanel />
+
       {/* PropStream */}
       <PropStreamCard sources={sources || []} />
 
       {/* Code Violations */}
       <CodeViolationsCard />
 
-      {/* Social / Bandit Comments */}
-      <SocialBanditSection expanded={expanded === 'social-bandit'} onToggle={() => toggle('social-bandit')} />
-
       {/* Water Shutoffs */}
       <WaterShutoffSection expanded={expanded === 'water-shutoffs'} onToggle={() => toggle('water-shutoffs')} />
 
-      {/* FSBOs */}
-      <FsboSection expanded={expanded === 'fsbo'} onToggle={() => toggle('fsbo')} />
+      {/* Nationwide Counties */}
+      <CountiesSection expanded={expanded === 'counties'} onToggle={() => toggle('counties')} />
 
       {/* Court Records */}
       <CourtRecordsSection expanded={expanded === 'court-records'} onToggle={() => toggle('court-records')} />
@@ -139,50 +205,64 @@ function SourceCardHeader({
   )
 }
 
-/* ── Social / Bandit ───────────────────────────────────────── */
+/* ── Background Jobs Log ──────────────────────────────────── */
 
-function SocialBanditSection({ expanded, onToggle }: { expanded: boolean; onToggle: () => void }) {
-  const { data: stats } = useQuery({
-    queryKey: ['social-bandit-stats'],
-    queryFn: hermesClient.socialBandit.stats,
-    refetchInterval: 30_000,
+function BackgroundJobsPanel() {
+  const { data: jobs } = useQuery({
+    queryKey: ['jobs'],
+    queryFn: () => hermesClient.jobs.list(),
+    refetchInterval: 5_000,
   })
 
-  const hasData = stats && stats.total_comments > 0
+  const activeJobs = (jobs || []).filter((j: any) => j.status === 'running')
+  const recentJobs = (jobs || []).filter((j: any) => j.status !== 'running').slice(0, 3)
+
+  if (activeJobs.length === 0 && recentJobs.length === 0) return null
 
   return (
     <div style={{
-      background: '#111118', border: `1px solid ${expanded ? '#6366f140' : '#1e1e2e'}`,
-      borderRadius: 10, padding: 20, marginBottom: 16,
-      transition: 'border-color 0.15s',
+      background: '#0d0d14', border: '1px solid #1e1e2e', borderRadius: 10,
+      padding: 16, marginBottom: 16,
     }}>
-      <SourceCardHeader
-        title="Social / Bandit Comments"
-        badges={[
-          { label: 'MINIMAL', color: '#ef4444' },
-          { label: 'SEMI-MANUAL', color: '#f59e0b' },
-        ]}
-        statsRow={hasData ? (
-          <div style={{ display: 'flex', gap: 16, fontSize: 12 }}>
-            <span style={{ color: '#f59e0b' }}>{stats.new_comments} new</span>
-            <span style={{ color: '#22c55e' }}>{stats.qualified_comments} qualified</span>
-            <span style={{ color: '#6366f1' }}>{stats.ingested_leads} ingested</span>
+      <div style={{ color: '#e0e0e0', fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
+        Background Jobs
+      </div>
+      {activeJobs.map((job: any) => (
+        <div key={job.job_id} style={{ marginBottom: 8 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#22c55e', animation: 'pulse 1.5s infinite' }} />
+            <span style={{ color: '#22c55e', fontSize: 12, fontWeight: 600 }}>{job.job_type}</span>
+            <span style={{ color: '#555', fontSize: 11 }}>{job.phase}</span>
           </div>
-        ) : undefined}
-        description="Harvest comments from your Facebook/Instagram ads and competitor ads."
-        expanded={expanded}
-        onToggle={onToggle}
-      />
-      {!expanded && hasData && (
-        <div style={{ fontSize: 11, color: '#444', marginTop: 6 }}>
-          {stats.active_campaigns} active campaigns tracking {stats.total_comments} total comments
+          <div style={{
+            background: '#0a0a10', borderRadius: 6, padding: '8px 12px',
+            maxHeight: 150, overflowY: 'auto', fontFamily: 'monospace', fontSize: 11, color: '#888',
+          }}>
+            {(() => {
+              try {
+                const lines = JSON.parse(job.log_lines_json || '[]')
+                return lines.slice(-15).map((l: any, i: number) => (
+                  <div key={i}>{typeof l === 'string' ? l : l.msg}</div>
+                ))
+              } catch { return null }
+            })()}
+          </div>
         </div>
-      )}
-      {expanded && (
-        <div style={{ marginTop: 16, borderTop: '1px solid #1e1e2e', paddingTop: 16 }}>
-          <SocialBanditPanel />
+      ))}
+      {recentJobs.map((job: any) => (
+        <div key={job.job_id} style={{
+          display: 'flex', gap: 8, alignItems: 'center', fontSize: 11, color: '#555', marginBottom: 4,
+        }}>
+          <span style={{
+            width: 8, height: 8, borderRadius: '50%',
+            background: job.status === 'completed' ? '#22c55e' : '#ef4444',
+          }} />
+          <span>{job.job_type}</span>
+          <span>{job.status}</span>
+          {job.completed_at && <span>{new Date(job.completed_at).toLocaleTimeString()}</span>}
+          {job.error && <span style={{ color: '#ef4444' }}>{job.error.slice(0, 60)}</span>}
         </div>
-      )}
+      ))}
     </div>
   )
 }
@@ -235,16 +315,16 @@ function WaterShutoffSection({ expanded, onToggle }: { expanded: boolean; onTogg
   )
 }
 
-/* ── FSBOs ─────────────────────────────────────────────────── */
+/* ── Nationwide Counties ──────────────────────────────────── */
 
-function FsboSection({ expanded, onToggle }: { expanded: boolean; onToggle: () => void }) {
+function CountiesSection({ expanded, onToggle }: { expanded: boolean; onToggle: () => void }) {
   const { data: stats } = useQuery({
-    queryKey: ['fsbo-stats'],
-    queryFn: hermesClient.fsbo.stats,
+    queryKey: ['county-stats'],
+    queryFn: hermesClient.counties.stats,
     refetchInterval: 30_000,
   })
 
-  const hasData = stats && stats.total_listings > 0
+  const hasData = stats && stats.total > 0
 
   return (
     <div style={{
@@ -253,37 +333,29 @@ function FsboSection({ expanded, onToggle }: { expanded: boolean; onToggle: () =
       transition: 'border-color 0.15s',
     }}>
       <SourceCardHeader
-        title="FSBOs (Zillow)"
+        title="Nationwide Counties"
         badges={[
-          { label: 'MODERATE', color: '#3b82f6' },
-          { label: 'SEMI-MANUAL', color: '#f59e0b' },
+          { label: 'NATIONWIDE', color: '#22c55e' },
+          { label: 'PROPSTREAM', color: '#6366f1' },
         ]}
         statsRow={hasData ? (
           <div style={{ display: 'flex', gap: 16, fontSize: 12 }}>
-            <span style={{ color: '#ef4444' }}>{stats.hot_listings} hot</span>
-            <span style={{ color: '#22c55e' }}>{stats.qualified_listings} qualified</span>
-            <span style={{ color: '#6366f1' }}>{stats.ingested_leads} ingested</span>
+            <span style={{ color: '#22c55e' }}>{stats.scouted}/{stats.eligible} scouted</span>
+            <span style={{ color: '#f59e0b' }}>{stats.harvested} harvested</span>
           </div>
         ) : undefined}
-        description="For Sale By Owner listings from Zillow. Auto-scored for distress signals."
+        description="Scout all US counties via PropStream (zero-cost), rank by distress density, harvest the best."
         expanded={expanded}
         onToggle={onToggle}
       />
-      {!expanded && hasData && (
-        <div style={{ fontSize: 11, color: '#444', marginTop: 6 }}>
-          {stats.total_listings} listings tracked, avg distress score {stats.avg_distress_score}
-        </div>
-      )}
       {expanded && (
-        <div style={{ marginTop: 16, borderTop: '1px solid #1e1e2e', paddingTop: 16 }}>
-          <FsboPanel />
+        <div style={{ marginTop: 16 }}>
+          <CountiesPanel />
         </div>
       )}
     </div>
   )
 }
-
-/* ── Court Records (CaseNet) ──────────────────────────────── */
 
 function CourtRecordsSection({ expanded, onToggle }: { expanded: boolean; onToggle: () => void }) {
   const { data: stats } = useQuery({

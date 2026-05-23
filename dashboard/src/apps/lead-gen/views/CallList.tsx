@@ -309,20 +309,10 @@ function DetailPanel({ lead }: { lead: Lead }) {
   )
 }
 
-const PULSE_CSS = `@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}`
-let pulseInjected = false
+// statusPulse keyframe is in index.css
 
 export function CallList() {
-  useEffect(() => {
-    if (pulseInjected) return
-    const style = document.createElement('style')
-    style.textContent = PULSE_CSS
-    document.head.appendChild(style)
-    pulseInjected = true
-  }, [])
-
   const [statusFilter, setStatusFilter] = useState('')
-  const [listFilter, setListFilter] = useState('')
   const [dialMode, setDialMode] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [bulkResult, setBulkResult] = useState<string | null>(null)
@@ -358,32 +348,17 @@ export function CallList() {
     },
   })
 
-  const [pipelineLocalLog, setPipelineLocalLog] = useState<string[]>([])
-  const [pipelineError, setPipelineError] = useState<string | null>(null)
-
-  const startPipeline = useMutation({
-    mutationFn: () => hermesClient.skipTrace.runPipeline({ source: 'code_violations' }),
-    onMutate: () => {
-      setPipelineError(null)
-      setPipelineLocalLog(['Starting skip trace pipeline...'])
-      setPipelineOpen(true)
-    },
-    onSuccess: (data) => {
-      setPipelineLocalLog((prev) => [...prev, data.message || 'Pipeline launched — a browser window will open.'])
-    },
-    onError: (err) => {
-      const msg = err instanceof Error ? err.message : String(err)
-      setPipelineError(msg)
-      setPipelineLocalLog((prev) => [...prev, `ERROR: ${msg}`])
-    },
-  })
+  const [pipelineLocalLog, _setPipelineLocalLog] = useState<string[]>([])
+  const [pipelineError, _setPipelineError] = useState<string | null>(null)
 
   const { data: pipelineStatus } = useQuery({
     queryKey: ['skip-trace-pipeline-status'],
     queryFn: () => hermesClient.skipTrace.pipelineStatus(),
-    refetchInterval: pipelineOpen ? 2000 : false,
-    enabled: pipelineOpen,
+    refetchInterval: 3000,
   })
+
+  const pipelineRunning = pipelineStatus?.running || false
+  const leadsProcessing = (pipelineStatus as any)?.leads_processing ?? 0
 
   useEffect(() => {
     if (pipelineStatus && !pipelineStatus.running && pipelineStatus.phase === 'complete') {
@@ -393,23 +368,42 @@ export function CallList() {
   }, [pipelineStatus?.running, pipelineStatus?.phase, queryClient])
 
   useEffect(() => {
+    if (pipelineRunning && !pipelineOpen) setPipelineOpen(true)
+  }, [pipelineRunning, pipelineOpen])
+
+  useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [pipelineStatus?.log_lines?.length])
 
-  const listNames = useMemo(() => {
+  const readyLeads = useMemo(() => {
     if (!leads) return []
-    const names = new Set<string>()
-    for (const l of leads) {
-      if (l.last_list_name) names.add(l.last_list_name)
-    }
-    return Array.from(names).sort()
+    return leads.filter((l) => l.callable_phones.length > 0 || (l.phone_numbers && l.phone_numbers.length > 0))
   }, [leads])
 
+  const sourceGroups = useMemo(() => {
+    if (!readyLeads.length) return new Map<string, number>()
+    const counts = new Map<string, number>()
+    for (const l of readyLeads) {
+      const src = l.source || 'other'
+      counts.set(src, (counts.get(src) || 0) + 1)
+    }
+    return counts
+  }, [readyLeads])
+
+  function formatGroupLabel(raw: string): string {
+    return raw.replace(/[_-]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+  }
+
+  const [sourceFilter, setSourceFilter] = useState('')
+
   const filtered = useMemo(() => {
-    if (!leads) return []
-    if (!listFilter) return leads
-    return leads.filter((l) => l.last_list_name === listFilter)
-  }, [leads, listFilter])
+    if (!readyLeads.length) return []
+    let result = readyLeads
+    if (sourceFilter) {
+      result = result.filter((l) => (l.source || 'other') === sourceFilter)
+    }
+    return result
+  }, [readyLeads, sourceFilter])
 
   const toggleSelect = useCallback((leadId: string) => {
     setSelectedIds((prev) => {
@@ -470,7 +464,7 @@ export function CallList() {
           <h2 style={{ color: '#e0e0e0', fontSize: 20, margin: 0 }}>
             Call List
             <span style={{ color: '#666', fontSize: 14, marginLeft: 8 }}>
-              ({filtered.length}{listFilter || statusFilter ? ` of ${leads?.length ?? 0}` : ''})
+              ({filtered.length}{sourceFilter || statusFilter ? ` of ${leads?.length ?? 0}` : ''})
             </span>
           </h2>
           <div style={{ display: 'flex', gap: 8 }}>
@@ -491,36 +485,30 @@ export function CallList() {
           </div>
         </div>
 
-        {/* List selector */}
-        {listNames.length > 1 && (
-          <div style={{ marginBottom: 10 }}>
-            <div style={{ fontSize: 10, color: '#555', textTransform: 'uppercase', marginBottom: 4, letterSpacing: 0.5 }}>List</div>
-            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+        {/* Source filter tabs */}
+        {sourceGroups.size > 0 && (
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 10 }}>
+            <button
+              onClick={() => setSourceFilter('')}
+              style={{
+                ...btnBase, fontSize: 11,
+                background: !sourceFilter ? '#6366f120' : '#111118',
+                color: !sourceFilter ? '#6366f1' : '#666',
+                border: `1px solid ${!sourceFilter ? '#6366f140' : '#1e1e2e'}`,
+              }}
+            >All ({readyLeads.length})</button>
+            {Array.from(sourceGroups.entries()).sort((a, b) => b[1] - a[1]).map(([src, count]) => (
               <button
-                onClick={() => setListFilter('')}
+                key={src}
+                onClick={() => setSourceFilter(src)}
                 style={{
                   ...btnBase, fontSize: 11,
-                  background: !listFilter ? '#6366f120' : '#111118',
-                  color: !listFilter ? '#6366f1' : '#666',
-                  border: `1px solid ${!listFilter ? '#6366f140' : '#1e1e2e'}`,
+                  background: sourceFilter === src ? '#6366f120' : '#111118',
+                  color: sourceFilter === src ? '#6366f1' : '#666',
+                  border: `1px solid ${sourceFilter === src ? '#6366f140' : '#1e1e2e'}`,
                 }}
-              >All Lists</button>
-              {listNames.map((name) => {
-                const count = leads?.filter((l) => l.last_list_name === name).length ?? 0
-                return (
-                  <button
-                    key={name}
-                    onClick={() => setListFilter(name)}
-                    style={{
-                      ...btnBase, fontSize: 11,
-                      background: listFilter === name ? '#6366f120' : '#111118',
-                      color: listFilter === name ? '#6366f1' : '#666',
-                      border: `1px solid ${listFilter === name ? '#6366f140' : '#1e1e2e'}`,
-                    }}
-                  >{name} <span style={{ color: '#444', marginLeft: 2 }}>({count})</span></button>
-                )
-              })}
-            </div>
+              >{formatGroupLabel(src)} <span style={{ color: '#444', marginLeft: 2 }}>({count})</span></button>
+            ))}
           </div>
         )}
 
@@ -540,107 +528,93 @@ export function CallList() {
           ))}
         </div>
 
-        {/* Skip trace banner -- shows when leads lack phone numbers */}
-        {(() => {
-          const noPhoneCount = filtered.filter((l) => l.callable_phones.length === 0).length
-          const isRunning = pipelineStatus?.running
-          if (noPhoneCount === 0 && !pipelineOpen) return null
-          return (
-            <div style={{
-              marginBottom: 12, padding: '10px 14px', background: '#f97316' + '10',
-              border: '1px solid #f97316' + '30', borderRadius: 8,
-            }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        {/* Processing banner — auto-shows when leads are being skip-traced */}
+        {(leadsProcessing > 0 || pipelineRunning || pipelineOpen) && (
+          <div style={{
+            marginBottom: 12, padding: '10px 14px',
+            background: pipelineRunning ? '#6366f110' : '#f9731610',
+            border: `1px solid ${pipelineRunning ? '#6366f130' : '#f9731630'}`,
+            borderRadius: 8,
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                {pipelineRunning && (
+                  <span style={{
+                    display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+                    background: '#6366f1',
+                    animation: 'statusPulse 1.5s ease-in-out infinite',
+                  }} />
+                )}
                 <div>
-                  <span style={{ color: '#f97316', fontSize: 13, fontWeight: 600 }}>
-                    {noPhoneCount} lead{noPhoneCount !== 1 ? 's' : ''} missing phone numbers
+                  <span style={{ color: pipelineRunning ? '#6366f1' : '#f97316', fontSize: 13, fontWeight: 600 }}>
+                    {pipelineRunning
+                      ? `Enriching ${leadsProcessing > 0 ? leadsProcessing.toLocaleString() : ''} leads...`
+                      : `${leadsProcessing.toLocaleString()} lead${leadsProcessing !== 1 ? 's' : ''} processing`}
                   </span>
                   <div style={{ color: '#888', fontSize: 11, marginTop: 2 }}>
-                    {isRunning
-                      ? 'Skip trace pipeline is running — watch progress below.'
-                      : 'Click to automatically find phone numbers via PropStream.'}
+                    {pipelineRunning
+                      ? 'Skip trace pipeline is running — leads will appear here once enriched with phone numbers.'
+                      : 'Leads without phone numbers are being queued for skip tracing automatically.'}
                   </div>
                 </div>
-                <button
-                  onClick={() => {
-                    if (isRunning) {
-                      setPipelineOpen((o) => !o)
-                    } else {
-                      startPipeline.mutate()
-                    }
-                  }}
-                  disabled={startPipeline.isPending}
-                  style={{
-                    ...btnBase, padding: '7px 18px', fontSize: 12, fontWeight: 700,
-                    color: isRunning ? '#eab308' : '#f97316',
-                    background: isRunning ? '#eab30818' : '#f9731620',
-                    borderRadius: 6,
-                  }}
-                >
-                  {startPipeline.isPending
-                    ? 'Starting...'
-                    : isRunning
-                      ? (pipelineOpen ? 'Hide Log' : 'Show Log')
-                      : 'Skip Trace Leads'}
-                </button>
               </div>
+              <button
+                onClick={() => setPipelineOpen((o) => !o)}
+                style={{
+                  ...btnBase, padding: '7px 18px', fontSize: 12, fontWeight: 700,
+                  color: '#6366f1', background: '#6366f118', borderRadius: 6,
+                }}
+              >
+                {pipelineOpen ? 'Hide Log' : 'Show Log'}
+              </button>
+            </div>
 
-              {/* Live pipeline log panel */}
-              {pipelineOpen && (
-                <div style={{ marginTop: 10 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{
-                        display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
-                        background: (isRunning || startPipeline.isPending) ? '#22c55e' : (pipelineStatus?.error || pipelineError) ? '#ef4444' : '#22c55e',
-                        animation: (isRunning || startPipeline.isPending) ? 'pulse 1.5s ease-in-out infinite' : 'none',
-                      }} />
-                      <span style={{ color: '#aaa', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-                        {startPipeline.isPending && 'Starting...'}
-                        {!startPipeline.isPending && pipelineStatus?.phase === 'launching' && 'Launching...'}
-                        {pipelineStatus?.phase === 'running' && `Running — ${pipelineStatus.address_count} addresses`}
-                        {pipelineStatus?.phase === 'ingesting' && 'Ingesting results...'}
-                        {pipelineStatus?.phase === 'complete' && 'Complete'}
-                        {pipelineStatus?.phase === 'error' && 'Failed'}
-                        {!startPipeline.isPending && pipelineStatus?.phase === 'idle' && 'Idle'}
-                        {!startPipeline.isPending && !pipelineStatus && 'Connecting...'}
-                      </span>
-                    </div>
-                    {!isRunning && !startPipeline.isPending && (
-                      <button
-                        onClick={() => setPipelineOpen(false)}
-                        style={{ background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: 14 }}
-                      >&times;</button>
-                    )}
+            {pipelineOpen && (
+              <div style={{ marginTop: 10 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{
+                      display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+                      background: pipelineRunning ? '#22c55e' : (pipelineStatus?.error || pipelineError) ? '#ef4444' : '#22c55e',
+                      animation: pipelineRunning ? 'statusPulse 1.5s ease-in-out infinite' : 'none',
+                    }} />
+                    <span style={{ color: '#aaa', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                      {pipelineStatus?.phase === 'launching' && 'Launching...'}
+                      {pipelineStatus?.phase === 'running' && `Running — ${pipelineStatus.address_count} addresses`}
+                      {pipelineStatus?.phase === 'ingesting' && 'Ingesting results...'}
+                      {pipelineStatus?.phase === 'complete' && 'Complete'}
+                      {pipelineStatus?.phase === 'error' && 'Failed'}
+                      {pipelineStatus?.phase === 'idle' && 'Idle'}
+                      {!pipelineStatus && 'Connecting...'}
+                    </span>
                   </div>
-                  <div style={{
-                    maxHeight: 240, overflow: 'auto', padding: '8px 10px',
-                    background: '#0a0a0f', borderRadius: 6, border: '1px solid #1e1e2e',
-                    fontFamily: 'monospace', fontSize: 11, lineHeight: 1.6,
-                  }}>
-                    {(pipelineStatus?.log_lines?.length ? pipelineStatus.log_lines : pipelineLocalLog).map((line, i) => (
-                      <div key={i} style={{
-                        color: line.includes('ERROR') ? '#ef4444'
-                          : line.includes('[pipeline]') ? '#6366f1'
-                            : line.includes('BALANCE') ? '#eab308'
-                              : '#888',
-                      }}>{line}</div>
-                    ))}
-                    <div ref={logEndRef} />
-                    {startPipeline.isPending && (!pipelineStatus?.log_lines?.length) && pipelineLocalLog.length <= 1 && (
-                      <div style={{ color: '#f59e0b' }}>Sending request to Hermes...</div>
-                    )}
-                  </div>
-                  {(pipelineStatus?.error || pipelineError) && (
-                    <div style={{ marginTop: 6, padding: '6px 10px', background: '#ef444418', borderRadius: 4, color: '#ef4444', fontSize: 11 }}>
-                      {pipelineStatus?.error || pipelineError}
-                    </div>
+                  {!pipelineRunning && (
+                    <button
+                      onClick={() => setPipelineOpen(false)}
+                      style={{ background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: 14 }}
+                    >&times;</button>
                   )}
                 </div>
-              )}
-            </div>
-          )
-        })()}
+                <div className={`log-tablet${pipelineRunning ? ' active' : pipelineError ? ' error' : pipelineStatus?.phase === 'complete' ? ' complete' : ''}`}>
+                  {(pipelineStatus?.log_lines?.length ? pipelineStatus.log_lines : pipelineLocalLog).map((line, i) => (
+                    <div key={i} style={{
+                      color: line.includes('ERROR') ? '#ef4444'
+                        : line.includes('[pipeline]') ? '#6366f1'
+                          : line.includes('BALANCE') ? '#eab308'
+                            : '#888',
+                    }}>{line}</div>
+                  ))}
+                  <div ref={logEndRef} />
+                </div>
+                {(pipelineStatus?.error || pipelineError) && (
+                  <div style={{ marginTop: 6, padding: '6px 10px', background: '#ef444418', borderRadius: 4, color: '#ef4444', fontSize: 11 }}>
+                    {pipelineStatus?.error || pipelineError}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Bulk action bar -- appears when leads are selected */}
         {selectedIds.size > 0 && (
@@ -736,7 +710,7 @@ export function CallList() {
               {filtered.length === 0 && (
                 <tr>
                   <td colSpan={9} style={{ padding: 32, textAlign: 'center', color: '#444' }}>
-                    {statusFilter || listFilter ? 'No leads match this filter.' : 'No leads in queue. Run the pipeline to generate a call list.'}
+                    {statusFilter || sourceFilter ? 'No leads match this filter.' : 'No leads in queue. Run the pipeline to generate a call list.'}
                   </td>
                 </tr>
               )}

@@ -61,7 +61,7 @@ export class BrowserSession {
       await this.context.addInitScript({ content: PAGE_BRIDGE_SOURCE });
       this.page = await this.context.newPage();
       this.sessionMode = "storage-state";
-      await this.page.goto(this.config.baseUrl, { waitUntil: "domcontentloaded" });
+      await this.page.goto(this.config.baseUrl, { waitUntil: "domcontentloaded", timeout: 90_000 });
       await this.ensureBridgeInjected(this.page);
       return this.page;
     }
@@ -80,7 +80,7 @@ export class BrowserSession {
     await this.context.addInitScript({ content: PAGE_BRIDGE_SOURCE });
     this.page = this.context.pages()[0] ?? (await this.context.newPage());
     this.sessionMode = "persistent";
-    await this.page.goto(this.config.baseUrl, { waitUntil: "domcontentloaded" });
+    await this.page.goto(this.config.baseUrl, { waitUntil: "domcontentloaded", timeout: 90_000 });
     await this.ensureBridgeInjected(this.page);
     return this.page;
   }
@@ -148,7 +148,7 @@ export class BrowserSession {
     const page = await this.start({ headed: true });
     const currentUrl = page.url();
     if (!/propstream\.com\/search/i.test(currentUrl)) {
-      await page.goto(`${this.config.baseUrl}/search`, { waitUntil: "domcontentloaded" }).catch((error) => {
+      await page.goto(`${this.config.baseUrl}/search`, { waitUntil: "domcontentloaded", timeout: 90_000 }).catch((error) => {
         if (!/ERR_ABORTED/i.test(String(error))) {
           throw error;
         }
@@ -218,7 +218,7 @@ export class BrowserSession {
     const page = await this.start({ headed: true });
     const currentUrl = page.url();
     if (!/propstream\.com\/search/i.test(currentUrl)) {
-      await page.goto(`${this.config.baseUrl}/search`, { waitUntil: "domcontentloaded" }).catch((error) => {
+      await page.goto(`${this.config.baseUrl}/search`, { waitUntil: "domcontentloaded", timeout: 90_000 }).catch((error) => {
         if (!/ERR_ABORTED/i.test(String(error))) {
           throw error;
         }
@@ -409,22 +409,22 @@ export class BrowserSession {
 
   async refreshPage() {
     const page = await this.getPage();
-    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.reload({ waitUntil: "domcontentloaded", timeout: 90_000 });
   }
 
   async gotoSearchPage() {
     const page = await this.getPage();
-    await page.goto(`${this.config.baseUrl}/search`, { waitUntil: "domcontentloaded" });
+    await page.goto(`${this.config.baseUrl}/search`, { waitUntil: "domcontentloaded", timeout: 90_000 });
   }
 
   async gotoSavedListPage() {
     const page = await this.getPage();
-    await page.goto(`${this.config.baseUrl}/property/group/0`, { waitUntil: "domcontentloaded" });
+    await page.goto(`${this.config.baseUrl}/property/group/0`, { waitUntil: "domcontentloaded", timeout: 90_000 });
   }
 
   async gotoUsagePage() {
     const page = await this.getPage();
-    await page.goto(`${this.config.baseUrl}/accountnew/landing`, { waitUntil: "domcontentloaded" });
+    await page.goto(`${this.config.baseUrl}/accountnew/landing`, { waitUntil: "domcontentloaded", timeout: 90_000 });
   }
 
   async screenshot(label: string) {

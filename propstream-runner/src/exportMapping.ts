@@ -73,6 +73,13 @@ function deriveDistressSignals(row: Record<string, string>) {
   const mlsStatus = csvValue(row, "MLS Status").toUpperCase();
   if (mlsStatus === "EXPIRED") signals.push("mls_expired");
   if (mlsStatus === "WITHDRAWN") signals.push("mls_withdrawn");
+
+  const fc = csvValue(row, "Foreclosure Factor").toLowerCase();
+  if (fc === "very high" || fc === "high") signals.push("pre_foreclosure");
+
+  const lien = csvNumber(row, "Lien Amount");
+  if (lien && lien > 0) signals.push("tax_lien");
+
   return signals;
 }
 

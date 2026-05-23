@@ -488,7 +488,7 @@ function CampaignsView() {
 
       {showCreate && <CreateCampaignForm onDone={() => setShowCreate(false)} />}
 
-      {(toggle.isError || create?.isError) && (
+      {toggle.isError && (
         <div style={{
           padding: '8px 14px', borderRadius: 6, marginBottom: 12,
           background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,

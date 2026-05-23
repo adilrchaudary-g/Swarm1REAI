@@ -350,7 +350,7 @@ export function DialMode({ leads, onClose }: Props) {
       {/* Skip button always visible in idle */}
       {phase === 'idle' && (
         <button
-          onClick={advanceNext}
+          onClick={() => advanceNext()}
           style={{ ...btn, width: '100%', background: 'transparent', color: '#444', marginTop: 8, padding: '8px 0', fontSize: 11 }}
         >
           Skip Lead &rarr;

@@ -43,6 +43,9 @@ export interface Lead {
   notes?: LeadNote[]
   history?: StatusHistoryEntry[]
 
+  // evaluation
+  evaluation_json?: string
+
   // computed by normalizer
   distress_signals: string[]
   callable_phones: PhoneRecord[]
@@ -75,6 +78,7 @@ export interface StatusHistoryEntry {
 export type MotivationTier = 'HOT' | 'WARM' | 'LUKEWARM' | 'COLD' | 'ICE'
 
 export type LeadStatus =
+  | 'imported'
   | 'new'
   | 'enriched'
   | 'scored'
@@ -304,6 +308,17 @@ export interface FsboStats {
   by_state: Record<string, number>
 }
 
+export interface FsboScrapeStatus {
+  running: boolean
+  job_id: string | null
+  log_lines: string[]
+  started_at: string | null
+  completed_at: string | null
+  result: Record<string, unknown> | null
+  error: string | null
+  phase: string
+}
+
 export type CourtRecordCaseStatus = 'new' | 'qualified' | 'junk' | 'ingested'
 
 export interface CourtRecordCounty {
@@ -370,4 +385,194 @@ export interface CourtRecordScrapeStatus {
   result: Record<string, unknown> | null
   error: string | null
   phase: string
+}
+
+export interface CountyScouting {
+  fips: string
+  county: string
+  state: string
+  population: number
+  median_home_value: number
+  search_term: string
+  scouted_at: string | null
+  pre_foreclosure_count: number | null
+  tax_delinquent_count: number | null
+  probate_count: number | null
+  vacant_sfr_count: number | null
+  total_distressed: number | null
+  static_score: number
+  scouted_score: number | null
+  last_harvested_at: string | null
+  harvest_count: number
+  leads_generated: number
+  regulatory_tier: string
+  updated_at: string
+}
+
+export interface CountyScoutingStats {
+  total: number
+  eligible: number
+  scouted: number
+  harvested: number
+  top_counties: CountyScouting[]
+}
+
+export interface ScoutPipelineStatus {
+  running: boolean
+  job_id: string | null
+  log_lines: string[]
+  started_at: string | null
+  completed_at: string | null
+  phase: string
+}
+
+export interface DistressedProperty {
+  address: string
+  city: string
+  state: string
+  zip: string
+  lat: number
+  lng: number
+  violation_type: string
+  violation_subtype: string
+  severity: number
+  date_opened: string
+  case_id: string
+  source_city: string
+}
+
+// ── Call Recordings ───────────────────────────────────────────
+
+export type CallScore = 'Strong' | 'Average' | 'Needs Work'
+export type SellerSentiment = 'Hot' | 'Warm' | 'Cold' | 'Dead'
+
+export interface MyPerformanceGrade {
+  controlled_conversation: string
+  uncovered_motivation: string
+  handled_objections: string
+  momentum_loss: string
+  score: number
+  summary: string
+}
+
+export interface SellerMotivationGrade {
+  core_reason: string
+  motivation_level: number
+  emotional_or_logical: string
+  timeline: string
+  overall_sentiment: SellerSentiment
+  summary: string
+}
+
+export interface CallRecording {
+  id: number
+  seller_name: string
+  property_address: string | null
+  call_date: string | null
+  file_path: string | null
+  file_name: string | null
+  file_type: string | null
+  transcript: string | null
+  my_performance_json: string | null
+  seller_motivation_json: string | null
+  call_score: CallScore | null
+  next_action: string | null
+  next_action_due: string | null
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CallRecordingStats {
+  total: number
+  transcribed: number
+  graded: number
+  by_score: Record<string, number>
+}
+
+// ── Underwriting ─────────────────────────────────────────────
+
+export interface UnderwritingReport {
+  id: number
+  lead_id: string
+  arv_propstream: number | null
+  arv_county: number | null
+  arv_zillow: number | null
+  arv_final: number | null
+  arv_confidence: number | null
+  arv_sources_json: string | null
+  repair_estimate_low: number | null
+  repair_estimate_high: number | null
+  repair_notes: string | null
+  mao_70: number | null
+  mao_65: number | null
+  assignment_fee_low: number | null
+  assignment_fee_high: number | null
+  cash_on_cash_buyer: number | null
+  holding_costs: number | null
+  photo_urls_json: string | null
+  street_view_url: string | null
+  zillow_url: string | null
+  county_assessor_url: string | null
+  propstream_url: string | null
+  condition_assessment: string | null
+  situation_summary: string | null
+  discrepancies_json: string | null
+  overall_grade: string | null
+  recommendation: string | null
+  status: string
+  created_at: string
+  updated_at: string
+  // joined
+  address_full?: string
+  owner_name?: string
+  lead?: Lead
+}
+
+export interface EvaluationStatus {
+  running: boolean
+  log_lines: string[]
+  started_at: string | null
+  completed_at: string | null
+  total: number
+  processed: number
+  passed: number
+  failed: number
+  phase: string
+}
+
+// ── KPI ──────────────────────────────────────────────────────
+
+export interface ConversionFunnel {
+  transitions: Record<string, number>
+  current: Record<string, number>
+  days_back: number
+}
+
+export interface CallMetrics {
+  calls_made: number
+  contacted: number
+  interested: number
+  voicemails: number
+  contact_rate: number
+  interest_rate: number
+  days_back: number
+}
+
+export interface DailyActivity {
+  day: string
+  calls: number
+  interested: number
+  queued: number
+  total_transitions: number
+}
+
+export interface SourceRoi {
+  source: string
+  total_leads: number
+  queued: number
+  contacted: number
+  interested: number
+  in_underwriting: number
+  closed_won: number
 }

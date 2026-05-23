@@ -222,6 +222,10 @@ export class PropStreamRunner {
     return this.propstream.exportListCsv(listName, saveTo);
   }
 
+  async scoutCounty(searchTerm: string, signals?: string[]) {
+    return this.propstream.scoutCounty(searchTerm, signals);
+  }
+
   async searchAndSaveAll(searchTerm: string, filters: Record<string, unknown>, listName: string, maxCount: number) {
     await this.propstream.openSearch();
     const searchResult = await this.propstream.searchInLiveSession({
@@ -258,6 +262,56 @@ export class PropStreamRunner {
       list_name: listName,
       prefer_batch_route: true,
     });
+  }
+
+  async skipTraceOrderOnly(listName: string, count = 9999) {
+    return this.propstream.skipTraceOrderOnly(listName, count);
+  }
+
+  async exportListWithPhoneCheck(listName: string, saveTo: string, maxAttempts = 6): Promise<{ rows: number; path: string; hasPhones: boolean }> {
+    const { writeFile } = await import("node:fs/promises");
+    let consecutiveNoPhone = 0;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const waitSec = attempt === 1 ? 0 : Math.min(60, 15 * attempt);
+      if (waitSec > 0) {
+        console.log(`[skip-trace] Attempt ${attempt}/${maxAttempts} — waiting ${waitSec}s...`);
+        await new Promise(r => setTimeout(r, waitSec * 1000));
+      }
+      try {
+        const result = await this.propstream.exportList({
+          command_type: "EXPORT",
+          list_name: listName,
+        });
+        const hasPhones = result.items.some(
+          (item: Record<string, unknown>) => {
+            for (const phones of (item as any).phone_numbers || []) {
+              if (typeof phones === "object" && phones?.value) return true;
+              if (typeof phones === "string" && phones.length >= 10) return true;
+            }
+            return false;
+          },
+        );
+        const csv = this.lastExportCsv;
+        if (csv) {
+          await writeFile(saveTo, csv, "utf8");
+        }
+        if (hasPhones) {
+          console.log(`[skip-trace] Phone data found on attempt ${attempt} — ${result.items.length} rows exported`);
+          return { rows: result.items.length, path: saveTo, hasPhones: true };
+        }
+        consecutiveNoPhone++;
+        console.log(`[skip-trace] Attempt ${attempt}: ${result.items.length} rows, no phones (${consecutiveNoPhone} consecutive)`);
+        if (consecutiveNoPhone >= 3 && attempt >= 3) {
+          console.log(`[skip-trace] Aborting — 3 consecutive exports without phone data`);
+          break;
+        }
+      } catch (error) {
+        console.log(`[skip-trace] Attempt ${attempt} export failed: ${error instanceof Error ? error.message : String(error)}`);
+        consecutiveNoPhone = 0;
+      }
+    }
+    console.log(`[skip-trace] WARNING: No phone data found after polling — export may need manual retry`);
+    return { rows: 0, path: saveTo, hasPhones: false };
   }
 
   async importCsvToList(csvPath: string, listName: string) {

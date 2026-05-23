@@ -8,7 +8,7 @@ import re
 import shutil
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -74,6 +74,7 @@ class HermesStore:
         self.artifacts_dir = self.data_dir / "artifacts"
         self.exports_dir = self.artifacts_dir / "exports"
         self.db_path = self.data_dir / "propstream.db"
+        self._county_catalog_by_fips: dict[str, dict[str, Any]] | None = None
 
     def initialize(self) -> dict[str, Any]:
         self._ensure_layout()
@@ -84,6 +85,86 @@ class HermesStore:
             "db_path": str(self.db_path),
             "exports_dir": str(self.exports_dir),
         }
+
+    def _load_county_catalog(self) -> dict[str, dict[str, Any]]:
+        if self._county_catalog_by_fips is None:
+            seed_path = self.root.parent / "lead_engine" / "data" / "us_counties.json"
+            if not seed_path.exists():
+                self._county_catalog_by_fips = {}
+            else:
+                counties = json.loads(seed_path.read_text())
+                self._county_catalog_by_fips = {
+                    str(county.get("fips") or "").zfill(5): county
+                    for county in counties
+                    if county.get("fips")
+                }
+        return self._county_catalog_by_fips
+
+    def _county_seed_profile(self, county: dict[str, Any]) -> dict[str, Any]:
+        from lead_engine.config import BLOCKED_STATES, HIGH_FRICTION_STATES
+
+        state = str(county.get("state") or "").upper()
+        population = int(county.get("population") or 0)
+        median_home_value = int(county.get("median_home_value") or 0)
+
+        if state in BLOCKED_STATES:
+            tier = "blocked"
+        elif state in HIGH_FRICTION_STATES:
+            tier = "high_friction"
+        else:
+            tier = "green"
+
+        static_score = 0
+        if 80_000 <= median_home_value <= 180_000:
+            static_score += 30
+        elif 180_000 < median_home_value <= 300_000:
+            static_score += 20
+        elif 300_000 < median_home_value <= 400_000:
+            static_score += 10
+
+        if population >= 500_000:
+            static_score += 15
+        elif population >= 200_000:
+            static_score += 10
+        elif population >= 100_000:
+            static_score += 5
+
+        if state in HIGH_FRICTION_STATES:
+            static_score -= 10
+        if state in BLOCKED_STATES:
+            static_score = 0
+
+        county_name = str(county.get("county") or "").strip()
+        search_term = str(county.get("search_term") or f"{county_name} {state}").strip()
+
+        return {
+            "county": county_name,
+            "state": state,
+            "population": population,
+            "median_home_value": median_home_value,
+            "search_term": search_term,
+            "static_score": max(static_score, 0),
+            "regulatory_tier": tier,
+        }
+
+    def _lookup_county_profile(self, fips: str, fallback_search_term: str = "") -> dict[str, Any] | None:
+        county = self._load_county_catalog().get(str(fips or "").zfill(5))
+        if county:
+            return self._county_seed_profile(county)
+
+        search_term = str(fallback_search_term or "").strip()
+        if not search_term:
+            return None
+
+        county_name, sep, state = search_term.rpartition(" ")
+        if not sep:
+            return None
+
+        return self._county_seed_profile({
+            "county": county_name.strip() or search_term,
+            "state": state.strip().upper(),
+            "search_term": search_term,
+        })
 
     def ingest_envelope(
         self,
@@ -262,10 +343,16 @@ class HermesStore:
         persona: str | None = None,
         limit: int = 100,
         offset: int = 0,
+        require_phone: bool = True,
+        include_unverified: bool = False,
     ) -> list[dict[str, Any]]:
         with self._connect() as conn:
             clauses = ["1=1"]
             params: list[Any] = []
+            if require_phone:
+                clauses.append("EXISTS (SELECT 1 FROM owner_phones op WHERE op.owner_id = l.owner_id)")
+            if not include_unverified:
+                clauses.append("(l.propstream_verified = 1 OR l.propstream_verified IS NULL)")
             if status:
                 clauses.append("l.status = ?")
                 params.append(status)
@@ -464,6 +551,218 @@ class HermesStore:
                 (now_iso(), status, count, source_id),
             )
 
+    # ── Pending verification (staging table for PropStream gate) ──
+
+    def stage_for_verification(
+        self, source: str, addresses: list[dict[str, Any]], batch_id: str,
+    ) -> dict[str, Any]:
+        ts = now_iso()
+        with self._connect() as conn:
+            count = 0
+            for addr in addresses:
+                conn.execute(
+                    """
+                    INSERT INTO pending_verification
+                      (source, address_street, address_city, address_state, address_zip,
+                       owner_name, source_ref, batch_id, status, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+                    """,
+                    (
+                        source,
+                        addr.get("address_street", ""),
+                        addr.get("address_city", ""),
+                        addr.get("address_state"),
+                        addr.get("address_zip"),
+                        addr.get("owner_name"),
+                        addr.get("source_ref"),
+                        batch_id,
+                        ts,
+                    ),
+                )
+                count += 1
+        return {"status": "ok", "batch_id": batch_id, "staged": count}
+
+    def list_pending_verification(
+        self, *, status: str = "pending", source: str | None = None, limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            clauses = ["status = ?"]
+            params: list[Any] = [status]
+            if source:
+                clauses.append("source = ?")
+                params.append(source)
+            where = " AND ".join(clauses)
+            rows = conn.execute(
+                f"SELECT * FROM pending_verification WHERE {where} ORDER BY created_at LIMIT ?",
+                (*params, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def pending_verification_stats(self) -> dict[str, Any]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT source, status, COUNT(*) AS c FROM pending_verification GROUP BY source, status"
+            ).fetchall()
+            by_source: dict[str, dict[str, int]] = {}
+            for r in rows:
+                by_source.setdefault(r["source"], {})[r["status"]] = r["c"]
+            total_pending = conn.execute(
+                "SELECT COUNT(*) AS c FROM pending_verification WHERE status = 'pending'"
+            ).fetchone()["c"]
+            return {"total_pending": total_pending, "by_source": by_source}
+
+    def mark_verification_batch(self, batch_id: str, status: str) -> int:
+        ts = now_iso()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE pending_verification SET status = ?, verified_at = ? WHERE batch_id = ?",
+                (status, ts if status == "verified" else None, batch_id),
+            )
+            return cursor.rowcount
+
+    def export_pending_as_csv(self, batch_id: str | None = None) -> tuple[str, int]:
+        with self._connect() as conn:
+            if batch_id:
+                rows = conn.execute(
+                    "SELECT * FROM pending_verification WHERE batch_id = ? AND status = 'pending'",
+                    (batch_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM pending_verification WHERE status = 'pending' ORDER BY created_at LIMIT 500"
+                ).fetchall()
+            if not rows:
+                return "", 0
+            output = io.StringIO()
+            writer = csv.writer(output)
+            writer.writerow(["Address", "City", "State", "Zip"])
+            for r in rows:
+                writer.writerow([r["address_street"], r["address_city"], r["address_state"] or "", r["address_zip"] or ""])
+            ids = [r["id"] for r in rows]
+            placeholders = ",".join("?" for _ in ids)
+            conn.execute(
+                f"UPDATE pending_verification SET status = 'exported' WHERE id IN ({placeholders})",
+                ids,
+            )
+            return output.getvalue(), len(rows)
+
+    # ── Background jobs (replaces module-level state dicts) ──
+
+    def create_job(self, job_id: str, job_type: str) -> dict[str, Any]:
+        ts = now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO background_jobs
+                  (job_id, job_type, status, phase, log_lines_json, started_at, created_at)
+                VALUES (?, ?, 'running', 'starting', '[]', ?, ?)
+                """,
+                (job_id, job_type, ts, ts),
+            )
+        return {"job_id": job_id, "status": "running"}
+
+    def update_job(self, job_id: str, *, phase: str | None = None, log_line: str | None = None,
+                   status: str | None = None, result: Any = None, error: str | None = None) -> None:
+        with self._connect() as conn:
+            if log_line:
+                existing = conn.execute(
+                    "SELECT log_lines_json FROM background_jobs WHERE job_id = ?", (job_id,)
+                ).fetchone()
+                if existing:
+                    lines = json.loads(existing["log_lines_json"] or "[]")
+                    lines.append({"t": now_iso(), "msg": log_line})
+                    if len(lines) > 500:
+                        lines = lines[-500:]
+                    conn.execute(
+                        "UPDATE background_jobs SET log_lines_json = ? WHERE job_id = ?",
+                        (json.dumps(lines), job_id),
+                    )
+            updates = []
+            params: list[Any] = []
+            if phase:
+                updates.append("phase = ?")
+                params.append(phase)
+            if status:
+                updates.append("status = ?")
+                params.append(status)
+                if status in ("completed", "failed"):
+                    updates.append("completed_at = ?")
+                    params.append(now_iso())
+            if result is not None:
+                updates.append("result_json = ?")
+                params.append(json.dumps(result, default=str))
+            if error is not None:
+                updates.append("error = ?")
+                params.append(error)
+            if updates:
+                params.append(job_id)
+                conn.execute(
+                    f"UPDATE background_jobs SET {', '.join(updates)} WHERE job_id = ?",
+                    params,
+                )
+
+    def get_job(self, job_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM background_jobs WHERE job_id = ?", (job_id,)).fetchone()
+            return dict(row) if row else None
+
+    def list_jobs(self, *, job_type: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            if job_type:
+                rows = conn.execute(
+                    "SELECT * FROM background_jobs WHERE job_type = ? ORDER BY created_at DESC LIMIT ?",
+                    (job_type, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM background_jobs ORDER BY created_at DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_latest_job(self, job_type: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM background_jobs
+                WHERE job_type = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (job_type,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def recover_running_jobs(self, job_type: str, *, error: str, log_line: str | None = None) -> int:
+        ts = now_iso()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT job_id, log_lines_json
+                FROM background_jobs
+                WHERE job_type = ? AND status = 'running'
+                """,
+                (job_type,),
+            ).fetchall()
+            for row in rows:
+                lines = json.loads(row["log_lines_json"] or "[]")
+                if log_line:
+                    lines.append({"t": ts, "msg": log_line})
+                conn.execute(
+                    """
+                    UPDATE background_jobs
+                    SET status = 'failed',
+                        phase = 'error',
+                        error = ?,
+                        completed_at = ?,
+                        log_lines_json = ?
+                    WHERE job_id = ?
+                    """,
+                    (error, ts, json.dumps(lines), row["job_id"]),
+                )
+            return len(rows)
+
     def get_pipeline_stats(self) -> dict[str, Any]:
         with self._connect() as conn:
             total = conn.execute("SELECT COUNT(*) AS c FROM leads").fetchone()["c"]
@@ -476,8 +775,22 @@ class HermesStore:
             source_rows = conn.execute(
                 "SELECT source, COUNT(*) AS c FROM leads WHERE source IS NOT NULL GROUP BY source"
             ).fetchall()
+            verified = conn.execute(
+                "SELECT COUNT(*) AS c FROM leads WHERE propstream_verified = 1 AND status NOT IN ('archived', 'dead')"
+            ).fetchone()["c"]
+            with_phones = conn.execute(
+                """SELECT COUNT(DISTINCT l.lead_id) AS c FROM leads l
+                   JOIN owner_phones op ON op.owner_id = l.owner_id
+                   WHERE l.status NOT IN ('archived', 'dead')"""
+            ).fetchone()["c"]
+            pending_verification = conn.execute(
+                "SELECT COUNT(*) AS c FROM pending_verification WHERE status = 'pending'"
+            ).fetchone()["c"]
             return {
                 "total_leads": total,
+                "verified_leads": verified,
+                "leads_with_phones": with_phones,
+                "pending_verification": pending_verification,
                 "by_status": {r["status"]: r["c"] for r in status_rows},
                 "by_tier": {r["motivation_tier"]: r["c"] for r in tier_rows},
                 "by_source": {r["source"]: r["c"] for r in source_rows},
@@ -554,6 +867,168 @@ class HermesStore:
                 (now_iso(), outcome, follow_up_id),
             )
             return {"status": "ok", "id": follow_up_id}
+
+    # ── Underwriting reports ──────────────────────────────────────
+
+    def create_underwriting_report(self, lead_id: str) -> dict[str, Any]:
+        self.initialize()
+        ts = now_iso()
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT id, status FROM underwriting_reports WHERE lead_id = ?", (lead_id,)
+            ).fetchone()
+            if existing:
+                return {"status": "ok", "id": existing["id"], "existed": True}
+            cursor = conn.execute(
+                "INSERT INTO underwriting_reports (lead_id, status, created_at, updated_at) VALUES (?, 'pending', ?, ?)",
+                (lead_id, ts, ts),
+            )
+            return {"status": "ok", "id": cursor.lastrowid, "existed": False}
+
+    def update_underwriting_report(self, lead_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        self.initialize()
+        allowed = {
+            "arv_propstream", "arv_county", "arv_zillow", "arv_final", "arv_confidence",
+            "arv_sources_json", "repair_estimate_low", "repair_estimate_high", "repair_notes",
+            "mao_70", "mao_65", "assignment_fee_low", "assignment_fee_high",
+            "cash_on_cash_buyer", "holding_costs", "photo_urls_json", "street_view_url",
+            "zillow_url", "county_assessor_url", "propstream_url", "condition_assessment",
+            "situation_summary", "discrepancies_json", "overall_grade", "recommendation", "status",
+        }
+        sets = []
+        vals = []
+        for k, v in data.items():
+            if k in allowed:
+                sets.append(f"{k} = ?")
+                vals.append(v)
+        if not sets:
+            return {"status": "noop"}
+        sets.append("updated_at = ?")
+        vals.append(now_iso())
+        vals.append(lead_id)
+        with self._connect() as conn:
+            conn.execute(f"UPDATE underwriting_reports SET {', '.join(sets)} WHERE lead_id = ?", vals)
+            return {"status": "ok", "lead_id": lead_id}
+
+    def get_underwriting_report(self, lead_id: str) -> dict[str, Any] | None:
+        self.initialize()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM underwriting_reports WHERE lead_id = ?", (lead_id,)
+            ).fetchone()
+            if not row:
+                return None
+            return dict(row)
+
+    def list_underwriting_reports(self, status: str | None = None) -> list[dict[str, Any]]:
+        self.initialize()
+        with self._connect() as conn:
+            if status:
+                rows = conn.execute(
+                    "SELECT ur.*, p.address_full, o.owner_name "
+                    "FROM underwriting_reports ur "
+                    "JOIN leads l ON l.lead_id = ur.lead_id "
+                    "JOIN properties p ON p.property_id = l.property_id "
+                    "JOIN owners o ON o.owner_id = l.owner_id "
+                    "WHERE ur.status = ? ORDER BY ur.updated_at DESC",
+                    (status,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT ur.*, p.address_full, o.owner_name "
+                    "FROM underwriting_reports ur "
+                    "JOIN leads l ON l.lead_id = ur.lead_id "
+                    "JOIN properties p ON p.property_id = l.property_id "
+                    "JOIN owners o ON o.owner_id = l.owner_id "
+                    "ORDER BY ur.updated_at DESC",
+                ).fetchall()
+            return [dict(r) for r in rows]
+
+    # ── KPI queries ──────────────────────────────────────────────
+
+    def get_conversion_funnel(self, days_back: int = 30) -> dict[str, Any]:
+        self.initialize()
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days_back)).isoformat()
+        with self._connect() as conn:
+            stages = {}
+            for status in ["imported", "new", "enriched", "queued", "contacted", "interested", "underwriting", "under_contract", "closed_won"]:
+                row = conn.execute(
+                    "SELECT COUNT(DISTINCT lead_id) as cnt FROM lead_status_history WHERE to_status = ? AND created_at >= ?",
+                    (status, cutoff),
+                ).fetchone()
+                stages[status] = row["cnt"] if row else 0
+            by_status = conn.execute(
+                "SELECT status, COUNT(*) as cnt FROM leads GROUP BY status"
+            ).fetchall()
+            current = {r["status"]: r["cnt"] for r in by_status}
+            return {"transitions": stages, "current": current, "days_back": days_back}
+
+    def get_call_metrics(self, days_back: int = 7) -> dict[str, Any]:
+        self.initialize()
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days_back)).isoformat()
+        with self._connect() as conn:
+            calls_made = conn.execute(
+                "SELECT COUNT(DISTINCT lead_id) as cnt FROM lead_status_history "
+                "WHERE to_status IN ('contacted', 'interested', 'not_interested') AND created_at >= ?",
+                (cutoff,),
+            ).fetchone()["cnt"]
+            contacted = conn.execute(
+                "SELECT COUNT(DISTINCT lead_id) as cnt FROM lead_status_history "
+                "WHERE to_status = 'contacted' AND created_at >= ?",
+                (cutoff,),
+            ).fetchone()["cnt"]
+            interested = conn.execute(
+                "SELECT COUNT(DISTINCT lead_id) as cnt FROM lead_status_history "
+                "WHERE to_status = 'interested' AND created_at >= ?",
+                (cutoff,),
+            ).fetchone()["cnt"]
+            voicemails = conn.execute(
+                "SELECT COUNT(*) as cnt FROM lead_status_history "
+                "WHERE to_status = 'contacted' AND reason LIKE '%voicemail%' AND created_at >= ?",
+                (cutoff,),
+            ).fetchone()["cnt"]
+            return {
+                "calls_made": calls_made,
+                "contacted": contacted,
+                "interested": interested,
+                "voicemails": voicemails,
+                "contact_rate": round(contacted / calls_made * 100, 1) if calls_made else 0,
+                "interest_rate": round(interested / contacted * 100, 1) if contacted else 0,
+                "days_back": days_back,
+            }
+
+    def get_daily_activity(self, days_back: int = 30) -> list[dict[str, Any]]:
+        self.initialize()
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days_back)).isoformat()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DATE(created_at) as day, "
+                "SUM(CASE WHEN to_status IN ('contacted', 'interested', 'not_interested') THEN 1 ELSE 0 END) as calls, "
+                "SUM(CASE WHEN to_status = 'interested' THEN 1 ELSE 0 END) as interested, "
+                "SUM(CASE WHEN to_status = 'queued' THEN 1 ELSE 0 END) as queued, "
+                "COUNT(*) as total_transitions "
+                "FROM lead_status_history WHERE created_at >= ? "
+                "GROUP BY DATE(created_at) ORDER BY day",
+                (cutoff,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_source_roi(self) -> list[dict[str, Any]]:
+        self.initialize()
+        with self._connect() as conn:
+            rows = conn.execute("""
+                SELECT l.source,
+                    COUNT(*) as total_leads,
+                    SUM(CASE WHEN l.status = 'queued' THEN 1 ELSE 0 END) as queued,
+                    SUM(CASE WHEN l.status = 'contacted' THEN 1 ELSE 0 END) as contacted,
+                    SUM(CASE WHEN l.status = 'interested' THEN 1 ELSE 0 END) as interested,
+                    SUM(CASE WHEN l.status IN ('underwriting', 'under_contract') THEN 1 ELSE 0 END) as in_underwriting,
+                    SUM(CASE WHEN l.status = 'closed_won' THEN 1 ELSE 0 END) as closed_won
+                FROM leads l
+                GROUP BY l.source
+                ORDER BY total_leads DESC
+            """).fetchall()
+            return [dict(r) for r in rows]
 
     def record_discord_ref(
         self,
@@ -986,28 +1461,6 @@ class HermesStore:
               tokenize = 'unicode61'
             );
 
-            CREATE VIEW IF NOT EXISTS v_outstanding_leads AS
-            SELECT
-              l.lead_id,
-              l.status,
-              l.motivation_score,
-              l.motivation_tier,
-              l.updated_at,
-              l.last_list_name,
-              p.address_full,
-              p.address_zip,
-              o.owner_name
-            FROM leads l
-            JOIN properties p ON p.property_id = l.property_id
-            JOIN owners o ON o.owner_id = l.owner_id
-            WHERE l.status NOT IN ('closed', 'dead')
-            ORDER BY COALESCE(l.motivation_score, -1) DESC, l.updated_at DESC;
-
-            CREATE VIEW IF NOT EXISTS v_hot_queue AS
-            SELECT * FROM v_outstanding_leads
-            WHERE COALESCE(motivation_tier, '') = 'hot'
-               OR COALESCE(motivation_score, 0) >= 80;
-
             CREATE VIEW IF NOT EXISTS v_needs_skip_trace AS
             SELECT
               l.lead_id,
@@ -1061,8 +1514,147 @@ class HermesStore:
               'QUOTA_REMOTE_EXHAUSTED'
             )
             ORDER BY e.received_at DESC, err.id DESC;
+
+            CREATE TABLE IF NOT EXISTS pending_verification (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              source TEXT NOT NULL,
+              address_street TEXT NOT NULL,
+              address_city TEXT NOT NULL,
+              address_state TEXT,
+              address_zip TEXT,
+              owner_name TEXT,
+              source_ref TEXT,
+              batch_id TEXT,
+              status TEXT NOT NULL DEFAULT 'pending',
+              created_at TEXT NOT NULL,
+              verified_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_pending_verification_status ON pending_verification(status);
+            CREATE INDEX IF NOT EXISTS idx_pending_verification_batch ON pending_verification(batch_id);
+
+            CREATE TABLE IF NOT EXISTS background_jobs (
+              job_id TEXT PRIMARY KEY,
+              job_type TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'pending',
+              phase TEXT,
+              log_lines_json TEXT DEFAULT '[]',
+              started_at TEXT,
+              completed_at TEXT,
+              result_json TEXT,
+              error TEXT,
+              retry_count INTEGER DEFAULT 0,
+              created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS call_recordings (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              seller_name TEXT NOT NULL,
+              property_address TEXT,
+              call_date TEXT,
+              file_path TEXT,
+              file_name TEXT,
+              file_type TEXT,
+              transcript TEXT,
+              my_performance_json TEXT,
+              seller_motivation_json TEXT,
+              call_score TEXT,
+              next_action TEXT,
+              next_action_due TEXT,
+              notes TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_call_recordings_score ON call_recordings(call_score);
+            CREATE INDEX IF NOT EXISTS idx_call_recordings_call_date ON call_recordings(call_date);
             """,
         )
+        self._migrate_propstream_verified(conn)
+        self._migrate_evaluation_and_underwriting(conn)
+
+    def _migrate_evaluation_and_underwriting(self, conn: sqlite3.Connection) -> None:
+        lead_cols = {row[1] for row in conn.execute("PRAGMA table_info(leads)").fetchall()}
+        if "evaluation_json" not in lead_cols:
+            conn.execute("ALTER TABLE leads ADD COLUMN evaluation_json TEXT")
+
+        fu_cols = {row[1] for row in conn.execute("PRAGMA table_info(follow_ups)").fetchall()}
+        if "disposition" not in fu_cols:
+            conn.execute("ALTER TABLE follow_ups ADD COLUMN disposition TEXT")
+            conn.execute("ALTER TABLE follow_ups ADD COLUMN priority TEXT DEFAULT 'medium'")
+
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS underwriting_reports (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              lead_id TEXT NOT NULL UNIQUE,
+              arv_propstream INTEGER,
+              arv_county INTEGER,
+              arv_zillow INTEGER,
+              arv_final INTEGER,
+              arv_confidence REAL,
+              arv_sources_json TEXT,
+              repair_estimate_low INTEGER,
+              repair_estimate_high INTEGER,
+              repair_notes TEXT,
+              mao_70 INTEGER,
+              mao_65 INTEGER,
+              assignment_fee_low INTEGER,
+              assignment_fee_high INTEGER,
+              cash_on_cash_buyer REAL,
+              holding_costs INTEGER,
+              photo_urls_json TEXT,
+              street_view_url TEXT,
+              zillow_url TEXT,
+              county_assessor_url TEXT,
+              propstream_url TEXT,
+              condition_assessment TEXT,
+              situation_summary TEXT,
+              discrepancies_json TEXT,
+              overall_grade TEXT,
+              recommendation TEXT,
+              status TEXT DEFAULT 'pending',
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              FOREIGN KEY (lead_id) REFERENCES leads(lead_id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_underwriting_reports_lead_id ON underwriting_reports(lead_id);
+            CREATE INDEX IF NOT EXISTS idx_underwriting_reports_status ON underwriting_reports(status);
+        """)
+
+    def _migrate_propstream_verified(self, conn: sqlite3.Connection) -> None:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(leads)").fetchall()}
+        if "propstream_verified" not in cols:
+            conn.execute("ALTER TABLE leads ADD COLUMN propstream_verified INTEGER DEFAULT 0")
+            conn.execute("ALTER TABLE leads ADD COLUMN propstream_verified_at TEXT")
+            conn.execute(
+                "UPDATE leads SET propstream_verified = 1, propstream_verified_at = updated_at "
+                "WHERE source = 'propstream'"
+            )
+        conn.execute("DROP VIEW IF EXISTS v_outstanding_leads")
+        conn.execute("DROP VIEW IF EXISTS v_hot_queue")
+        conn.executescript("""
+            CREATE VIEW IF NOT EXISTS v_outstanding_leads AS
+            SELECT
+              l.lead_id,
+              l.status,
+              l.motivation_score,
+              l.motivation_tier,
+              l.updated_at,
+              l.last_list_name,
+              p.address_full,
+              p.address_zip,
+              o.owner_name
+            FROM leads l
+            JOIN properties p ON p.property_id = l.property_id
+            JOIN owners o ON o.owner_id = l.owner_id
+            WHERE l.status NOT IN ('closed', 'dead')
+              AND EXISTS (SELECT 1 FROM owner_phones op WHERE op.owner_id = l.owner_id)
+            ORDER BY COALESCE(l.motivation_score, -1) DESC, l.updated_at DESC;
+
+            CREATE VIEW IF NOT EXISTS v_hot_queue AS
+            SELECT * FROM v_outstanding_leads
+            WHERE COALESCE(motivation_tier, '') = 'hot'
+               OR COALESCE(motivation_score, 0) >= 80;
+        """)
 
     def _insert_bridge_event(self, conn: sqlite3.Connection, envelope: dict[str, Any]) -> dict[str, Any]:
         message_id = envelope["message_id"]
@@ -1319,6 +1911,20 @@ class HermesStore:
                     lane=lane,
                     event_message_id=envelope["message_id"],
                 )
+            # Merge distress signals from new data with existing lead's signals
+            existing_row = conn.execute(
+                "SELECT distress_signals_json FROM leads WHERE lead_id = ?",
+                (refs["lead_id"],)
+            ).fetchone()
+            existing_signals: list[str] = []
+            if existing_row and existing_row["distress_signals_json"]:
+                try:
+                    existing_signals = json.loads(existing_row["distress_signals_json"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            new_signals = item.get("distress_signals") or []
+            merged = list(dict.fromkeys(existing_signals + new_signals))
+            item["distress_signals"] = merged
             # Attach contact info if present (phones/emails from skip-traced export)
             if self._item_has_contacts(item):
                 self._upsert_contact_lists(
@@ -1345,10 +1951,16 @@ class HermesStore:
                 ),
             )
             if self._item_has_contacts(item):
+                lead_source = (item.get("source") or "").lower()
+                current_status = self._get_lead_status(conn, refs["lead_id"])
+                if lead_source == "propstream" and current_status in (None, "new", "imported"):
+                    to_status = "imported"
+                else:
+                    to_status = "enriched"
                 self._set_lead_status(
                     conn,
                     lead_id=refs["lead_id"],
-                    to_status="enriched",
+                    to_status=to_status,
                     reason="EXPORT result",
                     event_message_id=envelope["message_id"],
                     change_status=True,
@@ -1376,6 +1988,20 @@ class HermesStore:
                     lane=lane,
                     event_message_id=envelope["message_id"],
                 )
+            # Merge distress signals from new data with existing lead's signals
+            existing_row = conn.execute(
+                "SELECT distress_signals_json FROM leads WHERE lead_id = ?",
+                (refs["lead_id"],)
+            ).fetchone()
+            existing_signals: list[str] = []
+            if existing_row and existing_row["distress_signals_json"]:
+                try:
+                    existing_signals = json.loads(existing_row["distress_signals_json"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            new_signals = item.get("distress_signals") or []
+            merged = list(dict.fromkeys(existing_signals + new_signals))
+            item["distress_signals"] = merged
             self._upsert_contact_lists(
                 conn,
                 owner_id=refs["owner_id"],
@@ -1441,6 +2067,20 @@ class HermesStore:
                         lane=lane,
                         event_message_id=envelope["message_id"],
                     )
+                # Merge distress signals from new data with existing lead's signals
+                existing_row = conn.execute(
+                    "SELECT distress_signals_json FROM leads WHERE lead_id = ?",
+                    (refs["lead_id"],)
+                ).fetchone()
+                existing_signals: list[str] = []
+                if existing_row and existing_row["distress_signals_json"]:
+                    try:
+                        existing_signals = json.loads(existing_row["distress_signals_json"])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                new_signals = item.get("distress_signals") or []
+                merged = list(dict.fromkeys(existing_signals + new_signals))
+                item["distress_signals"] = merged
                 self._upsert_contact_lists(
                     conn,
                     owner_id=refs["owner_id"],
@@ -1672,8 +2312,10 @@ class HermesStore:
               router_reason,
               motivation_score,
               motivation_tier,
-              last_event_message_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              last_event_message_id,
+              propstream_verified,
+              propstream_verified_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(lead_id) DO UPDATE SET
               property_id = excluded.property_id,
               owner_id = excluded.owner_id,
@@ -1695,7 +2337,9 @@ class HermesStore:
               router_reason = COALESCE(excluded.router_reason, leads.router_reason),
               motivation_score = COALESCE(excluded.motivation_score, leads.motivation_score),
               motivation_tier = COALESCE(excluded.motivation_tier, leads.motivation_tier),
-              last_event_message_id = excluded.last_event_message_id
+              last_event_message_id = excluded.last_event_message_id,
+              propstream_verified = CASE WHEN excluded.propstream_verified = 1 THEN 1 ELSE leads.propstream_verified END,
+              propstream_verified_at = COALESCE(excluded.propstream_verified_at, leads.propstream_verified_at)
             """,
             (
                 lead_id,
@@ -1722,6 +2366,8 @@ class HermesStore:
                 item.get("motivation_score"),
                 item.get("motivation_tier"),
                 event_message_id,
+                1 if (item.get("source") or "propstream") == "propstream" else 0,
+                timestamp if (item.get("source") or "propstream") == "propstream" else None,
             ),
         )
 
@@ -3646,6 +4292,20 @@ Sincerely,
         self.update_source_run("fsbo", status="success", count=leads_created)
         return {"status": "ok", "ingested": len(listings), "leads_created": leads_created}
 
+    def auto_ingest_fsbo(self) -> dict[str, Any]:
+        """Auto-ingest all qualified + high-distress new FSBO listings."""
+        with self._connect() as conn:
+            self._ensure_fsbo_tables(conn)
+            rows = conn.execute(
+                "SELECT id FROM fsbo_listings WHERE (status = 'qualified' OR (status = 'new' AND distress_score >= 40))"
+            ).fetchall()
+            listing_ids = [r["id"] for r in rows]
+
+        if not listing_ids:
+            return {"status": "ok", "ingested": 0, "leads_created": 0}
+
+        return self.ingest_fsbo_listings(listing_ids)
+
     # ── Court Records (CaseNet) ──────────────────────────────────────
 
     def _ensure_court_record_tables(self, conn: sqlite3.Connection) -> None:
@@ -3996,6 +4656,92 @@ Sincerely,
         self.update_source_run("court_records", status="success", count=leads_created)
         return {"status": "ok", "ingested": len(cases), "leads_created": leads_created}
 
+    def ingest_water_shutoff_to_staging(self, record_ids: list[int]) -> dict[str, Any]:
+        import uuid as _uuid
+        with self._connect() as conn:
+            self._ensure_water_shutoff_tables(conn)
+            placeholders = ",".join("?" for _ in record_ids)
+            rows = conn.execute(
+                f"SELECT * FROM water_shutoff_records WHERE id IN ({placeholders}) AND status = 'new'",
+                record_ids,
+            ).fetchall()
+            records = [dict(r) for r in rows]
+
+        batch_id = f"ws-{_uuid.uuid4().hex[:8]}"
+        addresses = []
+        for rec in records:
+            addr = (rec.get("service_address") or "").strip()
+            city = (rec.get("city") or "").strip()
+            state = (rec.get("state") or "").strip()
+            zipcode = (rec.get("zip") or "").strip()
+            holder = (rec.get("account_holder") or "").strip()
+            if not addr:
+                continue
+            addresses.append({
+                "address_street": addr,
+                "address_city": city,
+                "address_state": state,
+                "address_zip": zipcode,
+                "owner_name": holder,
+                "source_ref": str(rec["id"]),
+            })
+
+        result = self.stage_for_verification("water_shutoffs", addresses, batch_id)
+
+        with self._connect() as conn:
+            self._ensure_water_shutoff_tables(conn)
+            for rec_id in record_ids:
+                conn.execute(
+                    "UPDATE water_shutoff_records SET status = 'staged', updated_at = ? WHERE id = ?",
+                    (now_iso(), rec_id),
+                )
+
+        self.update_source_run("water_shutoffs", status="staged", count=result["staged"])
+        return {"status": "ok", "staged": result["staged"], "batch_id": batch_id}
+
+    def ingest_court_records_to_staging(self, case_ids: list[int]) -> dict[str, Any]:
+        import uuid as _uuid
+        with self._connect() as conn:
+            self._ensure_court_record_tables(conn)
+            placeholders = ",".join("?" for _ in case_ids)
+            rows = conn.execute(
+                f"SELECT * FROM court_record_cases WHERE id IN ({placeholders}) AND status IN ('qualified', 'new')",
+                case_ids,
+            ).fetchall()
+            cases = [dict(r) for r in rows]
+
+        batch_id = f"cr-{_uuid.uuid4().hex[:8]}"
+        addresses = []
+        for rec in cases:
+            prop_addr = (rec.get("property_address") or "").strip()
+            city = (rec.get("property_city") or "").strip()
+            state = (rec.get("property_state") or "MO").strip()
+            zipcode = (rec.get("property_zip") or "").strip()
+            pr_name = (rec.get("pr_name") or "").strip()
+            if not prop_addr and not pr_name:
+                continue
+            addresses.append({
+                "address_street": prop_addr,
+                "address_city": city,
+                "address_state": state,
+                "address_zip": zipcode,
+                "owner_name": pr_name,
+                "source_ref": str(rec["id"]),
+            })
+
+        result = self.stage_for_verification("court_records", addresses, batch_id)
+
+        with self._connect() as conn:
+            self._ensure_court_record_tables(conn)
+            for cid in case_ids:
+                conn.execute(
+                    "UPDATE court_record_cases SET status = 'staged', updated_at = ? WHERE id = ?",
+                    (now_iso(), cid),
+                )
+
+        self.update_source_run("court_records", status="staged", count=result["staged"])
+        return {"status": "ok", "staged": result["staged"], "batch_id": batch_id}
+
     def _parse_export_csv(self, text: str) -> list[dict[str, str]]:
         if not text.strip():
             return []
@@ -4120,3 +4866,425 @@ Sincerely,
             "skip_trace_count": number("Skip Traces"),
             "lead_lifecycle_state": "enriched" if (phone_numbers() or email_addresses()) else "new",
         }
+
+    # ── County Scouting ──────────────────────────────────────────────
+
+    def _ensure_county_scouting_table(self, conn: sqlite3.Connection) -> None:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS county_scouting (
+              fips TEXT PRIMARY KEY,
+              county TEXT NOT NULL,
+              state TEXT NOT NULL,
+              population INTEGER DEFAULT 0,
+              median_home_value INTEGER DEFAULT 0,
+              search_term TEXT NOT NULL,
+              scouted_at TEXT,
+              pre_foreclosure_count INTEGER,
+              tax_delinquent_count INTEGER,
+              probate_count INTEGER,
+              vacant_sfr_count INTEGER,
+              total_distressed INTEGER,
+              static_score INTEGER NOT NULL DEFAULT 0,
+              scouted_score INTEGER,
+              last_harvested_at TEXT,
+              harvest_count INTEGER NOT NULL DEFAULT 0,
+              leads_generated INTEGER NOT NULL DEFAULT 0,
+              regulatory_tier TEXT NOT NULL DEFAULT 'green',
+              updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_county_scouting_state ON county_scouting(state);
+            CREATE INDEX IF NOT EXISTS idx_county_scouting_static_score ON county_scouting(static_score DESC);
+            CREATE INDEX IF NOT EXISTS idx_county_scouting_scouted_score ON county_scouting(scouted_score DESC);
+            """
+        )
+
+    def seed_counties(self, counties: list[dict[str, Any]]) -> dict[str, int]:
+        ts = now_iso()
+        inserted = 0
+        skipped = 0
+        with self._connect() as conn:
+            self._ensure_county_scouting_table(conn)
+            for c in counties:
+                profile = self._county_seed_profile(c)
+
+                try:
+                    conn.execute(
+                        """INSERT INTO county_scouting
+                           (fips, county, state, population, median_home_value,
+                            search_term, static_score, regulatory_tier, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           ON CONFLICT(fips) DO UPDATE SET
+                             population = excluded.population,
+                             median_home_value = excluded.median_home_value,
+                             search_term = excluded.search_term,
+                             static_score = excluded.static_score,
+                             regulatory_tier = excluded.regulatory_tier,
+                             updated_at = excluded.updated_at
+                        """,
+                        (
+                            str(c["fips"]).zfill(5),
+                            profile["county"],
+                            profile["state"],
+                            profile["population"],
+                            profile["median_home_value"],
+                            profile["search_term"],
+                            profile["static_score"],
+                            profile["regulatory_tier"],
+                            ts,
+                        ),
+                    )
+                    inserted += 1
+                except Exception:
+                    skipped += 1
+        return {"inserted": inserted, "skipped": skipped}
+
+    def import_scout_results(self, results: list[dict[str, Any]]) -> int:
+        from lead_engine.config import BLOCKED_STATES, HIGH_FRICTION_STATES
+
+        updated = 0
+        with self._connect() as conn:
+            self._ensure_county_scouting_table(conn)
+            for r in results:
+                fips = str(r.get("fips") or "").zfill(5)
+                if not fips:
+                    continue
+                signal_map = {}
+                for s in r.get("signals", []):
+                    signal_map[s["signal"]] = s["count"]
+
+                pre_fc = signal_map.get("pre_foreclosure", 0)
+                tax_del = signal_map.get("tax_delinquent", 0)
+                probate = signal_map.get("probate", 0)
+                total = r.get("total_distressed", pre_fc + tax_del + probate)
+
+                row = conn.execute(
+                    """
+                    SELECT county, state, population, median_home_value, search_term,
+                           static_score, regulatory_tier
+                    FROM county_scouting
+                    WHERE fips = ?
+                    """,
+                    (fips,),
+                ).fetchone()
+                if row:
+                    county = row["county"]
+                    state = row["state"]
+                    pop = row["population"] or 0
+                    mhv = row["median_home_value"] or 0
+                    search_term = row["search_term"] or r.get("search_term") or fips
+                    static_score = row["static_score"] or 0
+                    regulatory_tier = row["regulatory_tier"] or "green"
+                else:
+                    profile = self._lookup_county_profile(fips, str(r.get("search_term") or ""))
+                    if not profile:
+                        continue
+                    county = profile["county"]
+                    state = profile["state"]
+                    pop = profile["population"]
+                    mhv = profile["median_home_value"]
+                    search_term = profile["search_term"]
+                    static_score = profile["static_score"]
+                    regulatory_tier = profile["regulatory_tier"]
+
+                sc = 0
+                if state not in BLOCKED_STATES:
+                    if total >= 500: sc += 35
+                    elif total >= 200: sc += 25
+                    elif total >= 100: sc += 15
+                    elif total >= 50: sc += 8
+
+                    if 80_000 <= mhv <= 180_000: sc += 25
+                    elif 180_000 < mhv <= 300_000: sc += 20
+                    elif 300_000 < mhv <= 400_000: sc += 10
+
+                    if pop >= 500_000: sc += 15
+                    elif pop >= 200_000: sc += 10
+                    elif pop >= 100_000: sc += 5
+
+                    sig_present = sum(1 for c in [pre_fc, tax_del, probate] if c > 20)
+                    sc += sig_present * 3
+
+                    if state in HIGH_FRICTION_STATES:
+                        sc -= 10
+                    sc = max(sc, 0)
+
+                conn.execute(
+                    """
+                    INSERT INTO county_scouting (
+                      fips, county, state, population, median_home_value, search_term,
+                      scouted_at, pre_foreclosure_count, tax_delinquent_count, probate_count,
+                      total_distressed, static_score, scouted_score, regulatory_tier, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(fips) DO UPDATE SET
+                      county = excluded.county,
+                      state = excluded.state,
+                      population = excluded.population,
+                      median_home_value = excluded.median_home_value,
+                      search_term = excluded.search_term,
+                      scouted_at = excluded.scouted_at,
+                      pre_foreclosure_count = excluded.pre_foreclosure_count,
+                      tax_delinquent_count = excluded.tax_delinquent_count,
+                      probate_count = excluded.probate_count,
+                      total_distressed = excluded.total_distressed,
+                      static_score = excluded.static_score,
+                      scouted_score = excluded.scouted_score,
+                      regulatory_tier = excluded.regulatory_tier,
+                      updated_at = excluded.updated_at
+                    """,
+                    (
+                        fips,
+                        county,
+                        state,
+                        pop,
+                        mhv,
+                        search_term,
+                        r.get("scouted_at", now_iso()),
+                        pre_fc,
+                        tax_del,
+                        probate,
+                        total,
+                        static_score,
+                        sc,
+                        regulatory_tier,
+                        now_iso(),
+                    ),
+                )
+                updated += 1
+        return updated
+
+    def get_scout_queue(self, batch_size: int = 50) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            self._ensure_county_scouting_table(conn)
+            rows = conn.execute(
+                """SELECT fips, county, state, search_term, static_score, population,
+                          median_home_value, regulatory_tier
+                   FROM county_scouting
+                   WHERE scouted_at IS NULL AND regulatory_tier != 'blocked'
+                   ORDER BY static_score DESC
+                   LIMIT ?""",
+                (batch_size,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_harvest_queue(self, batch_size: int = 10, cooldown_days: int = 14) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            self._ensure_county_scouting_table(conn)
+            rows = conn.execute(
+                """SELECT fips, county, state, search_term, scouted_score,
+                          total_distressed, last_harvested_at
+                   FROM county_scouting
+                   WHERE scouted_at IS NOT NULL
+                     AND regulatory_tier != 'blocked'
+                     AND (scouted_score IS NOT NULL AND scouted_score > 0)
+                     AND (last_harvested_at IS NULL
+                          OR julianday('now') - julianday(last_harvested_at) > ?)
+                   ORDER BY scouted_score DESC
+                   LIMIT ?""",
+                (cooldown_days, batch_size),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def county_scouting_stats(self) -> dict[str, Any]:
+        with self._connect() as conn:
+            self._ensure_county_scouting_table(conn)
+            total = conn.execute("SELECT COUNT(*) FROM county_scouting").fetchone()[0]
+            eligible = conn.execute(
+                "SELECT COUNT(*) FROM county_scouting WHERE regulatory_tier != 'blocked'"
+            ).fetchone()[0]
+            scouted = conn.execute(
+                "SELECT COUNT(*) FROM county_scouting WHERE scouted_at IS NOT NULL"
+            ).fetchone()[0]
+            harvested = conn.execute(
+                "SELECT COUNT(*) FROM county_scouting WHERE last_harvested_at IS NOT NULL"
+            ).fetchone()[0]
+            top = conn.execute(
+                """SELECT fips, county, state, static_score, scouted_score,
+                          total_distressed, population, median_home_value,
+                          search_term, scouted_at, last_harvested_at, regulatory_tier
+                   FROM county_scouting
+                   WHERE regulatory_tier != 'blocked'
+                   ORDER BY COALESCE(scouted_score, static_score) DESC
+                   LIMIT 20"""
+            ).fetchall()
+            return {
+                "total": total,
+                "eligible": eligible,
+                "scouted": scouted,
+                "harvested": harvested,
+                "top_counties": [dict(r) for r in top],
+            }
+
+    def list_counties(
+        self, *, state: str | None = None, tier: str | None = None,
+        scouted_only: bool = False, limit: int = 100, offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            self._ensure_county_scouting_table(conn)
+            clauses = []
+            params: list[Any] = []
+            if state:
+                clauses.append("state = ?")
+                params.append(state.upper())
+            if tier:
+                clauses.append("regulatory_tier = ?")
+                params.append(tier)
+            if scouted_only:
+                clauses.append("scouted_at IS NOT NULL")
+            where = " AND ".join(clauses) if clauses else "1=1"
+            rows = conn.execute(
+                f"""SELECT * FROM county_scouting
+                    WHERE {where}
+                    ORDER BY COALESCE(scouted_score, static_score) DESC
+                    LIMIT ? OFFSET ?""",
+                (*params, limit, offset),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def record_harvest(self, fips: str, leads_created: int = 0) -> None:
+        with self._connect() as conn:
+            self._ensure_county_scouting_table(conn)
+            conn.execute(
+                """UPDATE county_scouting SET
+                     last_harvested_at = ?,
+                     harvest_count = harvest_count + 1,
+                     leads_generated = leads_generated + ?,
+                     updated_at = ?
+                   WHERE fips = ?""",
+                (now_iso(), leads_created, now_iso(), fips),
+            )
+
+    # ── Call Recordings ─────────────────────────────────────────
+
+    def list_call_recordings(
+        self,
+        *,
+        search: str | None = None,
+        score: str | None = None,
+        motivation: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            clauses: list[str] = []
+            params: list[Any] = []
+            if search:
+                clauses.append(
+                    "(seller_name LIKE ? OR property_address LIKE ? OR transcript LIKE ?)"
+                )
+                like = f"%{search}%"
+                params.extend([like, like, like])
+            if score:
+                clauses.append("call_score = ?")
+                params.append(score)
+            if motivation:
+                clauses.append(
+                    "json_extract(seller_motivation_json, '$.overall_sentiment') = ?"
+                )
+                params.append(motivation)
+            if date_from:
+                clauses.append("call_date >= ?")
+                params.append(date_from)
+            if date_to:
+                clauses.append("call_date <= ?")
+                params.append(date_to)
+            where = " AND ".join(clauses) if clauses else "1=1"
+            rows = conn.execute(
+                f"""SELECT * FROM call_recordings
+                    WHERE {where}
+                    ORDER BY created_at DESC
+                    LIMIT ? OFFSET ?""",
+                (*params, limit, offset),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_call_recording(self, recording_id: int) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM call_recordings WHERE id = ?", (recording_id,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def create_call_recording(self, data: dict[str, Any]) -> dict[str, Any]:
+        now = now_iso()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """INSERT INTO call_recordings
+                   (seller_name, property_address, call_date, file_path, file_name,
+                    file_type, transcript, my_performance_json, seller_motivation_json,
+                    call_score, next_action, next_action_due, notes, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    data.get("seller_name", ""),
+                    data.get("property_address"),
+                    data.get("call_date"),
+                    data.get("file_path"),
+                    data.get("file_name"),
+                    data.get("file_type"),
+                    data.get("transcript"),
+                    json_dumps(data["my_performance_json"]) if data.get("my_performance_json") else None,
+                    json_dumps(data["seller_motivation_json"]) if data.get("seller_motivation_json") else None,
+                    data.get("call_score"),
+                    data.get("next_action"),
+                    data.get("next_action_due"),
+                    data.get("notes"),
+                    now,
+                    now,
+                ),
+            )
+            return {"status": "ok", "id": cur.lastrowid}
+
+    def update_call_recording(self, recording_id: int, updates: dict[str, Any]) -> dict[str, Any]:
+        allowed = {
+            "seller_name", "property_address", "call_date", "transcript",
+            "my_performance_json", "seller_motivation_json", "call_score",
+            "next_action", "next_action_due", "notes",
+        }
+        sets: list[str] = []
+        params: list[Any] = []
+        for k, v in updates.items():
+            if k not in allowed:
+                continue
+            if k in ("my_performance_json", "seller_motivation_json") and isinstance(v, (dict, list)):
+                v = json_dumps(v)
+            sets.append(f"{k} = ?")
+            params.append(v)
+        if not sets:
+            return {"status": "no_changes"}
+        sets.append("updated_at = ?")
+        params.append(now_iso())
+        params.append(recording_id)
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE call_recordings SET {', '.join(sets)} WHERE id = ?",
+                params,
+            )
+        return {"status": "ok", "id": recording_id}
+
+    def delete_call_recording(self, recording_id: int) -> dict[str, Any]:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM call_recordings WHERE id = ?", (recording_id,))
+        return {"status": "ok", "id": recording_id}
+
+    def call_recording_stats(self) -> dict[str, Any]:
+        with self._connect() as conn:
+            total = conn.execute("SELECT COUNT(*) as cnt FROM call_recordings").fetchone()["cnt"]
+            by_score: dict[str, int] = {}
+            for row in conn.execute(
+                "SELECT call_score, COUNT(*) as cnt FROM call_recordings WHERE call_score IS NOT NULL GROUP BY call_score"
+            ).fetchall():
+                by_score[row["call_score"]] = row["cnt"]
+            transcribed = conn.execute(
+                "SELECT COUNT(*) as cnt FROM call_recordings WHERE transcript IS NOT NULL AND transcript != ''"
+            ).fetchone()["cnt"]
+            graded = conn.execute(
+                "SELECT COUNT(*) as cnt FROM call_recordings WHERE my_performance_json IS NOT NULL"
+            ).fetchone()["cnt"]
+            return {
+                "total": total,
+                "transcribed": transcribed,
+                "graded": graded,
+                "by_score": by_score,
+            }

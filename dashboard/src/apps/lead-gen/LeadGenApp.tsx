@@ -3,8 +3,10 @@ import { PipelineDashboard } from './views/PipelineDashboard'
 import { CallList } from './views/CallList'
 import { SourcesPanel } from './views/SourcesPanel'
 import { MarketSelector } from './views/MarketSelector'
+import { DistressedProperties } from './views/DistressedProperties'
+import { CallRecordingsPanel } from './views/CallRecordingsPanel'
 
-type View = 'pipeline' | 'call-list' | 'sources' | 'markets'
+type View = 'pipeline' | 'call-list' | 'recordings' | 'distressed' | 'sources' | 'markets'
 
 export function LeadGenApp() {
   const [view, setView] = useState<View>('pipeline')
@@ -15,6 +17,8 @@ export function LeadGenApp() {
         {([
           { id: 'pipeline', label: 'Pipeline' },
           { id: 'call-list', label: 'Call List' },
+          { id: 'recordings', label: 'Recordings' },
+          { id: 'distressed', label: 'Distressed' },
           { id: 'sources', label: 'Sources' },
           { id: 'markets', label: 'Markets' },
         ] as const).map((tab) => (
@@ -38,6 +42,8 @@ export function LeadGenApp() {
 
       {view === 'pipeline' && <PipelineDashboard />}
       {view === 'call-list' && <CallList />}
+      {view === 'recordings' && <CallRecordingsPanel />}
+      {view === 'distressed' && <DistressedProperties />}
       {view === 'sources' && <SourcesPanel />}
       {view === 'markets' && <MarketSelector />}
     </div>

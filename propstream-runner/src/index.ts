@@ -180,7 +180,7 @@ async function main() {
         console.log(`Saved ${saved}/${discovered} to list`);
 
         if (saved > 0) {
-          const waitSec = saved >= 1000 ? 300 : saved >= 500 ? 180 : saved >= 200 ? 90 : 30;
+          const waitSec = saved >= 1000 ? 180 : saved >= 500 ? 120 : saved >= 200 ? 70 : 30;
           console.log(`Waiting ${waitSec}s for PropStream to process bulk save of ${saved}...`);
           await new Promise((r) => setTimeout(r, waitSec * 1000));
           console.log(`Skip tracing ${listName}...`);
@@ -309,6 +309,101 @@ async function main() {
     return;
   }
 
+  if (command === "scout-county") {
+    const searchTerm = process.argv[3];
+    if (!searchTerm) {
+      throw new Error('Usage: npm start -- scout-county "Hamilton County OH"');
+    }
+    const interactiveConfig = { ...config, headless: false };
+    const runner = await PropStreamRunner.create(interactiveConfig);
+    await runner.waitForManualSearchReady();
+
+    console.log(`\n=== SCOUTING: ${searchTerm} ===`);
+    const results = await runner.scoutCounty(searchTerm);
+    const total = results.reduce((sum, r) => sum + r.count, 0);
+    console.log(`\nResults for ${searchTerm}:`);
+    for (const r of results) {
+      console.log(`  ${r.signal}: ${r.count.toLocaleString()} properties`);
+    }
+    console.log(`  TOTAL DISTRESSED: ${total.toLocaleString()}`);
+    console.log(JSON.stringify({ search_term: searchTerm, signals: results, total_distressed: total }));
+    await runner.shutdown();
+    return;
+  }
+
+  if (command === "bulk-scout") {
+    const batchFile = process.argv[3];
+    const outputFileArg = process.argv[4];
+    if (!batchFile) {
+      throw new Error("Usage: npm start -- bulk-scout <batch-json-path> [output-json-path]");
+    }
+    const batchData: Array<{ fips: string; search_term: string }> = JSON.parse(
+      fs.readFileSync(batchFile, "utf8"),
+    );
+    if (!batchData.length) {
+      throw new Error("Batch file is empty");
+    }
+
+    const interactiveConfig = { ...config, headless: false };
+    const runner = await PropStreamRunner.create(interactiveConfig);
+    await runner.waitForManualSearchReady();
+
+    const date = new Date().toISOString().slice(0, 10);
+    const defaultOutDir = path.join(config.harvestArchiveRoot, "..", "scouting", date);
+    const outPath = outputFileArg
+      ? path.resolve(outputFileArg)
+      : path.join(defaultOutDir, "results.json");
+    const outDir = path.dirname(outPath);
+    fs.mkdirSync(outDir, { recursive: true });
+
+    const allResults: Array<{
+      fips: string;
+      search_term: string;
+      signals: Array<{ signal: string; count: number }>;
+      total_distressed: number;
+      scouted_at: string;
+    }> = [];
+
+    console.log(`\n=== BULK SCOUT: ${batchData.length} counties ===\n`);
+    for (const [idx, entry] of batchData.entries()) {
+      console.log(`[${idx + 1}/${batchData.length}] Scouting ${entry.search_term}...`);
+      try {
+        const results = await runner.scoutCounty(entry.search_term);
+        const total = results.reduce((sum, r) => sum + r.count, 0);
+        allResults.push({
+          fips: entry.fips,
+          search_term: entry.search_term,
+          signals: results,
+          total_distressed: total,
+          scouted_at: new Date().toISOString(),
+        });
+        console.log(`  → ${total.toLocaleString()} distressed properties`);
+      } catch (error) {
+        console.error(`  FAILED: ${error instanceof Error ? error.message : String(error)}`);
+        allResults.push({
+          fips: entry.fips,
+          search_term: entry.search_term,
+          signals: [],
+          total_distressed: 0,
+          scouted_at: new Date().toISOString(),
+        });
+      }
+    }
+
+    fs.writeFileSync(outPath, JSON.stringify(allResults, null, 2));
+    console.log(`\nScouting complete. ${allResults.length} counties scouted.`);
+    console.log(`Results written to: ${outPath}`);
+
+    const ranked = [...allResults].sort((a, b) => b.total_distressed - a.total_distressed);
+    console.log(`\nTop 10 by distressed count:`);
+    for (const r of ranked.slice(0, 10)) {
+      console.log(`  ${r.search_term}: ${r.total_distressed.toLocaleString()}`);
+    }
+
+    await runner.shutdown();
+    return;
+  }
+
   if (command === "bulk-harvest") {
     const signalArg = process.argv[3] || "pre_foreclosure";
     const maxPerCounty = Number(process.argv[4] || "1000");
@@ -352,7 +447,7 @@ async function main() {
     }
 
     // Phase 2: Wait for PropStream to process all saves
-    const waitMin = 10;
+    const waitMin = 5;
     console.log(`\n=== PHASE 2: WAITING ${waitMin} MIN FOR PROPSTREAM TO PROCESS ===`);
     for (let i = waitMin * 60; i > 0; i -= 30) {
       process.stdout.write(`\r  ${Math.ceil(i/60)} min remaining...   `);
@@ -481,14 +576,14 @@ async function main() {
 
   if (command === "import-skip-trace") {
     const csvPathArg = process.argv[3];
-    const listNameArg = process.argv[4] || `swarm-code-violations-${new Date().toISOString().slice(0, 10)}`;
+    const listNameArg = process.argv[4] || `swarm-skip-${new Date().toISOString().slice(0, 10)}`;
     const hermesUrl = process.env.HERMES_BASE_URL || "http://localhost:8765";
 
     if (!csvPathArg) {
       throw new Error(
         "Usage: npm start -- import-skip-trace <csvPath> [listName]\n" +
         "  csvPath: Path to CSV with Address,City,State,Zip columns\n" +
-        "  listName: Name for PropStream marketing list (default: swarm-code-violations-YYYY-MM-DD)"
+        "  listName: Name for PropStream marketing list (default: swarm-skip-YYYY-MM-DD)"
       );
     }
 
@@ -508,55 +603,102 @@ async function main() {
 
     // Phase 1: Import CSV into PropStream as a marketing list
     console.log(`\n--- PHASE 1: Import CSV to PropStream ---`);
-    try {
-      const importResult = await runner.importCsvToList(csvPath, listNameArg);
-      console.log(`Imported: ${importResult.imported} records to list "${importResult.listName}"`);
-    } catch (error) {
-      console.error(`Import failed: ${error instanceof Error ? error.message : String(error)}`);
-      console.log(`Continuing anyway - the list may have been partially created...`);
+    let importSucceeded = false;
+    for (let importAttempt = 1; importAttempt <= 2; importAttempt++) {
+      try {
+        const importResult = await runner.importCsvToList(csvPath, listNameArg);
+        console.log(`Imported: ${importResult.imported} records to list "${importResult.listName}"`);
+        importSucceeded = true;
+        break;
+      } catch (error) {
+        console.error(`Import attempt ${importAttempt} failed: ${error instanceof Error ? error.message : String(error)}`);
+        if (importAttempt < 2) {
+          console.log(`Retrying import in 10s...`);
+          await new Promise(r => setTimeout(r, 10_000));
+        }
+      }
+    }
+    if (!importSucceeded) {
+      console.error(`ABORT: Import failed after 2 attempts — cannot proceed without a list`);
+      await runner.shutdown();
+      return;
     }
 
-    // Phase 2: Wait for PropStream to process the import
-    const waitSec = csvLines >= 1000 ? 120 : csvLines >= 500 ? 60 : 30;
-    console.log(`\n--- PHASE 2: Waiting ${waitSec}s for PropStream to process import ---`);
-    await new Promise(r => setTimeout(r, waitSec * 1000));
+    // Phase 2: Poll for PropStream to process the import (instead of blind wait)
+    const maxImportWaitMs = csvLines >= 2000 ? 120_000 : csvLines >= 1000 ? 90_000 : 45_000;
+    console.log(`\n--- PHASE 2: Polling for import completion (max ${maxImportWaitMs / 1000}s) ---`);
+    const importPollStart = Date.now();
+    while (Date.now() - importPollStart < maxImportWaitMs) {
+      try {
+        const page = await (runner as any).browser.getPage();
+        const bodyText = await page.locator("body").innerText().catch(() => "");
+        if (/(\d[\d,]*)\s*(?:records?|properties|rows?)\s*(?:imported|matched|added|processed|found)/i.test(bodyText)) {
+          console.log(`[import] Processing complete detected after ${Math.round((Date.now() - importPollStart) / 1000)}s`);
+          break;
+        }
+        if (/saved|success|complete/i.test(bodyText) && !/processing|loading|importing/i.test(bodyText)) {
+          console.log(`[import] Success indicator found after ${Math.round((Date.now() - importPollStart) / 1000)}s`);
+          break;
+        }
+      } catch { /* page may be navigating */ }
+      await new Promise(r => setTimeout(r, 5_000));
+    }
 
-    // Phase 3: Skip trace the imported list
-    console.log(`\n--- PHASE 3: Skip Trace ---`);
+    // Phase 3: Navigate to the list and check how many PropStream matched, then order skip trace
+    console.log(`\n--- PHASE 3: Order Skip Trace ---`);
     try {
-      await runner.skipTraceList(listNameArg, csvLines);
+      await runner.skipTraceOrderOnly(listNameArg, csvLines);
       console.log(`Skip trace order placed for "${listNameArg}"`);
     } catch (error) {
-      console.error(`Skip trace failed: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(`Skip trace order failed: ${error instanceof Error ? error.message : String(error)}`);
+      console.log(`The skip trace may need to be ordered manually in PropStream.`);
     }
 
-    // Check balance
     const balance = await runner.checkSkipTraceBalance();
     console.log(`[BALANCE] Skip traces remaining: ${balance.skip_trace ?? "unknown"} | Saves: ${balance.saves ?? "unknown"} | Exports: ${balance.exports ?? "unknown"}`);
 
-    // Phase 4: Export the skip-traced list
-    console.log(`\n--- PHASE 4: Export skip-traced results ---`);
+    // Phase 4: Poll for skip trace completion, then export with phone verification
+    const maxSkipWaitMs = csvLines >= 2000 ? 180_000 : csvLines >= 1000 ? 120_000 : 60_000;
+    const skipPollInterval = 15_000;
+    console.log(`\n--- PHASE 4: Polling for skip trace data (max ${maxSkipWaitMs / 1000}s) ---`);
+    const skipPollStart = Date.now();
+    let skipDataReady = false;
+    while (Date.now() - skipPollStart < maxSkipWaitMs) {
+      try {
+        const page = await (runner as any).browser.getPage();
+        const rowCount = await page.locator(".ag-row").count().catch(() => 0);
+        const bodyText = await page.locator("body").innerText().catch(() => "");
+        const hasPhoneColumn = /phone/i.test(bodyText);
+        if (rowCount > 0 && hasPhoneColumn) {
+          console.log(`[skip-trace] Grid has ${rowCount} rows with phone column after ${Math.round((Date.now() - skipPollStart) / 1000)}s`);
+          skipDataReady = true;
+          break;
+        }
+        if (/skip trace.*complete|trace.*done/i.test(bodyText)) {
+          console.log(`[skip-trace] Completion indicator found after ${Math.round((Date.now() - skipPollStart) / 1000)}s`);
+          skipDataReady = true;
+          break;
+        }
+      } catch { /* page may be navigating */ }
+      await new Promise(r => setTimeout(r, skipPollInterval));
+    }
+    if (!skipDataReady) {
+      console.log(`[skip-trace] Max wait reached (${maxSkipWaitMs / 1000}s) — proceeding to export anyway`);
+    }
+
     const { mkdir } = await import("node:fs/promises");
     const archiveRoot = config.harvestArchiveRoot;
     const date = new Date().toISOString().slice(0, 10);
-    const exportDir = path.join(archiveRoot, "code-violations-skip-trace", date);
+    const exportDir = path.join(archiveRoot, "skip-trace-results", date);
     await mkdir(exportDir, { recursive: true });
     const exportPath = path.join(exportDir, `${listNameArg}.csv`);
 
-    try {
-      const csvResult = await runner.exportListCsv(listNameArg, exportPath);
-      console.log(`Exported ${csvResult.rows} rows to ${csvResult.path}`);
-    } catch (error) {
-      console.error(`Export failed: ${error instanceof Error ? error.message : String(error)}`);
-
-      // Try to get CSV from lastExportCsv (captured during skipTraceBatch)
-      const lastCsv = runner.lastExportCsv;
-      if (lastCsv) {
-        const { writeFile: wf } = await import("node:fs/promises");
-        await wf(exportPath, lastCsv, "utf8");
-        const rows = lastCsv.split("\n").filter((l: string) => l.trim()).length - 1;
-        console.log(`Recovered ${rows} rows from skip trace export cache`);
-      }
+    const exportResult = await runner.exportListWithPhoneCheck(listNameArg, exportPath, 8);
+    if (exportResult.hasPhones) {
+      console.log(`Exported ${exportResult.rows} rows with phone data to ${exportResult.path}`);
+    } else {
+      console.log(`WARNING: Exported but no phone data found after all attempts`);
+      console.log(`PropStream may still be processing. Try re-exporting later.`);
     }
 
     // Phase 5: Ingest results back to Hermes
@@ -577,7 +719,6 @@ async function main() {
       }
     } else {
       console.log(`No export file found. Skip trace may still be processing.`);
-      console.log(`Try re-exporting later: npm start -- reexport ${listNameArg} ${exportDir}`);
     }
 
     console.log(`\n=== PIPELINE COMPLETE ===`);
@@ -698,6 +839,123 @@ async function main() {
     console.log(`Cases found: ${cases.length}`);
     console.log(`CSV: ${csvPath}`);
     console.log(`Manifest: ${outputDir}/manifest.json`);
+
+    await browser.close();
+    return;
+  }
+
+  if (command === "fsbo") {
+    const hermesUrl = process.env.HERMES_BASE_URL || "http://localhost:8765";
+
+    console.log(`\n=== FSBO SCRAPER ===`);
+    console.log(`Fetching active markets from Hermes...`);
+
+    let markets: { id: number; metro: string; state: string; median_price: number | null; zillow_search_url: string | null; active: number }[];
+    try {
+      const resp = await fetch(`${hermesUrl}/api/fsbo/markets`);
+      markets = await resp.json() as typeof markets;
+    } catch (err) {
+      console.error(`ERROR: Cannot reach Hermes at ${hermesUrl}. Start the server first.`);
+      process.exitCode = 1;
+      return;
+    }
+
+    const activeMarkets = markets.filter((m) => m.active && m.zillow_search_url);
+    if (activeMarkets.length === 0) {
+      console.error("ERROR: No active FSBO markets with Zillow URLs configured.");
+      process.exitCode = 1;
+      return;
+    }
+
+    console.log(`Found ${activeMarkets.length} active market(s): ${activeMarkets.map((m) => `${m.metro}, ${m.state}`).join(" | ")}`);
+
+    const { ZillowFsboClient } = await import("./acquisition/zillow-fsbo-client.js");
+    const { BrowserSession } = await import("./browser/session.js");
+    const { mkdir, writeFile } = await import("node:fs/promises");
+
+    const interactiveConfig = { ...config, headless: false };
+    const browser = new BrowserSession(interactiveConfig);
+    const zillow = new ZillowFsboClient(browser);
+    await zillow.init();
+
+    const date = new Date().toISOString().slice(0, 10);
+    const allListings: Record<string, unknown>[] = [];
+
+    for (const market of activeMarkets) {
+      console.log(`\n--- ${market.metro}, ${market.state} ---`);
+      console.log(`URL: ${market.zillow_search_url}`);
+
+      try {
+        const listings = await zillow.scrapeMarket(market.zillow_search_url!, {
+          enrichDetail: true,
+          maxPages: 10,
+        });
+
+        console.log(`[${market.metro}] Scraped ${listings.length} listings`);
+
+        for (const l of listings) {
+          allListings.push({
+            ...l,
+            market_metro: market.metro,
+            market_state: market.state,
+          });
+        }
+
+        // Write per-market CSV
+        const slug = market.metro.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+        const marketDir = path.join(config.fsboArchiveRoot, slug, date);
+        await mkdir(marketDir, { recursive: true });
+
+        const header = "address,city,state,zip,asking_price,original_price,zestimate,days_on_market,price_drops,bedrooms,bathrooms,sqft,lot_sqft,year_built,photo_count,description,zillow_url";
+        const esc = (s: string | number | null) => `"${String(s ?? "").replace(/"/g, '""')}"`;
+        const rows = listings.map((l) =>
+          [esc(l.address), esc(l.city), esc(l.state), esc(l.zip),
+           l.asking_price ?? "", l.original_price ?? "", l.zestimate ?? "",
+           l.days_on_market ?? "", l.price_drops, l.bedrooms ?? "", l.bathrooms ?? "",
+           l.sqft ?? "", l.lot_sqft ?? "", l.year_built ?? "", l.photo_count ?? "",
+           esc(l.description), esc(l.zillow_url)].join(",")
+        );
+        await writeFile(path.join(marketDir, "fsbo.csv"), [header, ...rows].join("\n"), "utf8");
+        console.log(`[${market.metro}] CSV saved to ${marketDir}/fsbo.csv`);
+
+        // Send to Hermes for import + auto-ingest
+        console.log(`[${market.metro}] Importing to Hermes...`);
+        try {
+          const importResp = await fetch(`${hermesUrl}/api/fsbo/import`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              listings: listings,
+              market_metro: market.metro,
+              market_state: market.state,
+            }),
+          });
+          const importResult = await importResp.json() as { imported: number; duplicates: number; scored: number };
+          console.log(`[${market.metro}] Imported ${importResult.imported} (${importResult.duplicates} dupes, ${importResult.scored} scored)`);
+        } catch (err) {
+          console.error(`[${market.metro}] Import failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      } catch (err) {
+        console.error(`[${market.metro}] Scrape failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    // Auto-ingest all qualified listings
+    console.log(`\n--- AUTO-INGEST ---`);
+    try {
+      const ingestResp = await fetch(`${hermesUrl}/api/fsbo/auto-ingest`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const ingestResult = await ingestResp.json() as { ingested: number; leads_created: number };
+      console.log(`Auto-ingested ${ingestResult.ingested} listings → ${ingestResult.leads_created} leads created`);
+    } catch (err) {
+      console.error(`Auto-ingest failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    console.log(`\n=== FSBO SCRAPE COMPLETE ===`);
+    console.log(`Total listings scraped: ${allListings.length} across ${activeMarkets.length} markets`);
 
     await browser.close();
     return;

@@ -417,7 +417,7 @@ function ScrapeView() {
               {isRunning && (
                 <span style={{
                   display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
-                  background: '#22c55e', animation: 'pulse 1.5s infinite',
+                  background: '#22c55e', animation: 'statusPulse 1.5s infinite',
                 }} />
               )}
               <span style={{ color: '#888', fontSize: 12 }}>
@@ -434,12 +434,9 @@ function ScrapeView() {
             )}
           </div>
 
-          <div style={{
-            background: '#000', borderRadius: 6, padding: 12, maxHeight: 300,
-            overflowY: 'auto', fontFamily: 'monospace', fontSize: 11, lineHeight: 1.6,
-          }}>
+          <div className={`log-tablet${isRunning ? ' active' : scrapeStatus?.error || mutationError ? ' error' : scrapeStatus?.phase === 'complete' ? ' complete' : ''}`} style={{ maxHeight: 300 }}>
             {logLines.map((line, i) => (
-              <div key={i} style={{ color: line.includes('ERROR') ? '#ef4444' : line.includes('✓') ? '#22c55e' : '#888' }}>
+              <div key={i} style={{ color: line.includes('ERROR') ? '#ef4444' : line.includes('✓') ? '#22c55e' : line.includes('[court-records]') ? '#6366f1' : '#888' }}>
                 {line}
               </div>
             ))}

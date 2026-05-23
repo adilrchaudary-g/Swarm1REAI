@@ -352,6 +352,7 @@ describe("runner integration", () => {
         cookieStorePath: path.join(runtimeRoot, "cookie-store.json"),
         caseNetBaseUrl: "https://www.courts.mo.gov/cnet",
         courtRecordsArchiveRoot: path.join(runtimeRoot, "court-records"),
+        fsboArchiveRoot: path.join(runtimeRoot, "fsbo"),
       };
 
       const runner = await PropStreamRunner.create(config);
@@ -443,6 +444,7 @@ describe("runner integration", () => {
       cookieStorePath: path.join(runtimeRoot, "cookie-store.json"),
       caseNetBaseUrl: "https://www.courts.mo.gov/cnet",
       courtRecordsArchiveRoot: path.join(runtimeRoot, "court-records"),
+      fsboArchiveRoot: path.join(runtimeRoot, "fsbo"),
     };
 
     const runner = await PropStreamRunner.create(config);

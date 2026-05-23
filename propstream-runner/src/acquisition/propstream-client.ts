@@ -795,6 +795,48 @@ export class PropStreamClient {
     return result.items;
   }
 
+  async scoutCounty(
+    searchTerm: string,
+    signals: string[] = ["pre_foreclosure", "tax_delinquent", "probate"],
+  ): Promise<Array<{ signal: string; count: number }>> {
+    await this.ensureReady();
+    const results: Array<{ signal: string; count: number }> = [];
+
+    for (const signal of signals) {
+      const page = await this.openSearch();
+      await this.dismissBlockingOverlays(page).catch(() => undefined);
+      await this.setInputValue(page, SELECTORS.searchZipInputs, searchTerm);
+      this.logStep("scout:search-term-entered", { searchTerm, signal });
+
+      await this.applyFilters(page, { vacant: true, sfr_detached: true, [signal]: true });
+      this.logStep("scout:filters-applied", { signal });
+
+      const clicked =
+        (await this.clickBySelectors(page, SELECTORS.applyButtons)) ||
+        (await this.clickByText(page, /^search$/i)) ||
+        (await this.clickByText(page, /search|apply|update/i));
+      if (!clicked) {
+        this.logStep("scout:search-button-not-found", { signal });
+        results.push({ signal, count: 0 });
+        continue;
+      }
+
+      this.logStep("scout:submitted", { signal });
+      await page.waitForTimeout(3_000);
+      await this.dismissBlockingOverlays(page).catch(() => undefined);
+
+      const state = await this.browser.snapshot();
+      const countText = state.result_count_text || "";
+      const match = countText.match(/(\d[\d,]*)/);
+      const count = match ? Number(match[1].replace(/,/g, "")) : 0;
+      this.logStep("scout:result-count", { signal, count, raw: countText });
+      results.push({ signal, count });
+    }
+
+    this.logStep("scout:complete", { searchTerm, results });
+    return results;
+  }
+
   private async applyFilters(page: Page, filters: Record<string, unknown>) {
     if (!Object.keys(filters).length) return;
     const opened =
@@ -1425,6 +1467,139 @@ export class PropStreamClient {
     return this.skipTraceModal(payload);
   }
 
+  async skipTraceOrderOnly(listName: string, count: number): Promise<void> {
+    await this.ensureReady();
+    const page = await this.browser.getPage();
+    await this.navigateToListByName(page, listName);
+    this.logStep("skip-trace-order:navigated", { list_name: listName });
+    await this.dismissBlockingOverlays(page).catch(() => undefined);
+    await this.selectAllAgGridRows(page);
+    await this.dismissBlockingOverlays(page).catch(() => undefined);
+
+    const clicked =
+      (await this.clickVisibleButton(page, /^Skip Trace$/i)) ||
+      (await this.clickByText(page, /skip trace/i)) ||
+      (await this.clickBySelectors(page, SELECTORS.skipTraceButtons));
+    if (!clicked) {
+      throw new BridgeError("DOM_SELECTOR_MISSING", "Skip trace trigger missing");
+    }
+    this.logStep("skip-trace-order:button-clicked");
+
+    // Wait longer for the modal — PropStream can be slow
+    for (let waitAttempt = 0; waitAttempt < 5; waitAttempt++) {
+      await page.waitForTimeout(2_000);
+      await this.dismissBlockingOverlays(page).catch(() => undefined);
+
+      // Scan ALL visible modals/dialogs/overlays for skip trace content
+      const modalInfo = await page.evaluate(`(function(){
+        var candidates = document.querySelectorAll(
+          '[role="dialog"], [aria-modal="true"], [class*="Modal"], [class*="modal"], [class*="overlay"], [class*="Overlay"]'
+        );
+        var results = [];
+        for (var i = 0; i < candidates.length; i++) {
+          var r = candidates[i].getBoundingClientRect();
+          if (r.width > 100 && r.height > 100) {
+            var text = (candidates[i].innerText || "").substring(0, 500);
+            results.push({
+              selector: candidates[i].className.substring(0, 100),
+              text: text,
+              visible: r.width > 0 && r.height > 0,
+              bounds: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) }
+            });
+          }
+        }
+        return results;
+      })()`) as Array<{ selector: string; text: string; visible: boolean }>;
+
+      if (modalInfo.length > 0) {
+        this.logStep("skip-trace-order:modals-found", { count: modalInfo.length, selectors: modalInfo.map(m => m.selector.substring(0, 50)) });
+
+        for (const modal of modalInfo) {
+          if (/skip trace|order details|place order|eligible contacts|skip-trace/i.test(modal.text)) {
+            this.logStep("skip-trace-order:modal-matched", { text: modal.text.substring(0, 100) });
+
+            // Try to fill in list name if there's an input
+            const stListName = listName || `swarm-skip-${Date.now()}`;
+            const inputInfo = await page.evaluate(`(function(){
+              var inputs = document.querySelectorAll('input[type="text"], input:not([type])');
+              for (var i = 0; i < inputs.length; i++) {
+                var r = inputs[i].getBoundingClientRect();
+                var ph = (inputs[i].placeholder || "").toLowerCase();
+                if (r.width > 100 && r.height > 20 && r.y > 100 && r.y < 600) {
+                  if (ph.includes("list") || ph.includes("name") || ph.includes("enter") || ph === "") {
+                    return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2) };
+                  }
+                }
+              }
+              return null;
+            })()`);
+            if (inputInfo) {
+              await page.mouse.click((inputInfo as any).x, (inputInfo as any).y, { clickCount: 3 });
+              await page.waitForTimeout(100);
+              await page.keyboard.type(stListName, { delay: 20 });
+              await page.waitForTimeout(500);
+            }
+
+            // Check "re-skip trace" if present
+            await page.evaluate(`(function(){
+              var els = document.querySelectorAll("label, span, div, p, input[type='checkbox']");
+              for (var i = 0; i < els.length; i++) {
+                if (/re-skip trace|re.skip/i.test(els[i].textContent || "")) {
+                  var r = els[i].getBoundingClientRect();
+                  if (r.width > 0 && r.height > 0) { els[i].click(); return true; }
+                }
+              }
+              return false;
+            })()`);
+            await page.waitForTimeout(300);
+
+            // Find and click "Place Order" / "Submit" / "Confirm"
+            let ordered = false;
+            for (let btnWait = 0; btnWait < 10; btnWait++) {
+              const orderState = await page.evaluate(`(function(){
+                var btns = document.querySelectorAll("button, a[role='button']");
+                for (var i = 0; i < btns.length; i++) {
+                  var txt = (btns[i].textContent || "").trim();
+                  if (/place order|submit order|confirm|order now/i.test(txt)) {
+                    var r = btns[i].getBoundingClientRect();
+                    if (r.width > 0 && r.height > 0) {
+                      return { visible: true, disabled: btns[i].disabled, x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2), text: txt };
+                    }
+                  }
+                }
+                return { visible: false };
+              })()`) as { visible: boolean; disabled?: boolean; x?: number; y?: number; text?: string };
+              if (orderState?.visible && !orderState?.disabled && orderState.x && orderState.y) {
+                await page.mouse.click(orderState.x, orderState.y);
+                ordered = true;
+                this.logStep("skip-trace-order:placed", { buttonText: orderState.text });
+                await page.waitForTimeout(3_000);
+                break;
+              }
+              await page.waitForTimeout(1_000);
+            }
+            if (ordered) {
+              this.quota.increment("skip_trace", count);
+              await this.clickByText(page, /close|ok|done/i).catch(() => undefined);
+              await page.waitForTimeout(1_000);
+              await this.dismissBlockingOverlays(page).catch(() => undefined);
+              return;
+            }
+            this.logStep("skip-trace-order:button-not-found-in-modal");
+          }
+        }
+      }
+    }
+
+    // Take a screenshot for debugging if we got here without placing the order
+    await this.browser.screenshot("skip-trace-order-failed").catch(() => undefined);
+    this.logStep("skip-trace-order:no-modal-detected-after-retries");
+    this.quota.increment("skip_trace", count);
+    await this.clickByText(page, /close|ok|done/i).catch(() => undefined);
+    await page.waitForTimeout(1_000);
+    await this.dismissBlockingOverlays(page).catch(() => undefined);
+  }
+
   private async skipTraceBatch(payload: SkipTracePayload) {
     const page = await this.browser.getPage();
     await this.navigateToListByName(page, payload.list_name);
@@ -1544,7 +1719,7 @@ export class PropStreamClient {
     // Wait for skip trace processing — PropStream processes async.
     // Scale wait time by number of records being traced.
     const traceCount = payload.property_ids.length;
-    const traceWaitSec = traceCount >= 1000 ? 300 : traceCount >= 500 ? 180 : traceCount >= 100 ? 90 : 30;
+    const traceWaitSec = traceCount >= 1000 ? 180 : traceCount >= 500 ? 120 : traceCount >= 100 ? 70 : 30;
     this.logStep("skip-trace-batch:waiting-for-processing", { traceCount, traceWaitSec });
     await page.waitForTimeout(traceWaitSec * 1000);
 
@@ -1920,5 +2095,328 @@ export class PropStreamClient {
       default:
         return 1;
     }
+  }
+
+  /**
+   * Import a CSV file into PropStream as a marketing list.
+   *
+   * PropStream's import flow:
+   * 1. Navigate to Marketing Lists page (/property/group/0)
+   * 2. Click "Import" button
+   * 3. Upload the CSV file via the file input
+   * 4. Map columns (Address -> Address, City -> City, State -> State, Zip -> Zip)
+   * 5. Name the list and submit
+   *
+   * Returns the number of records imported.
+   */
+  async importCsvToList(options: {
+    csvPath: string;
+    listName: string;
+  }): Promise<{ imported: number; listName: string }> {
+    await this.ensureReady();
+    const page = await this.browser.getPage();
+
+    // Navigate to Marketing Lists
+    await this.browser.gotoSavedListPage();
+    await page.waitForLoadState("domcontentloaded");
+    await page.waitForTimeout(3_000);
+    await this.dismissBlockingOverlays(page).catch(() => undefined);
+
+    // Wait for the grid to fully load before attempting to click Import List.
+    // The grid loading overlay can intercept clicks.
+    const gridLoaded = Date.now();
+    while (Date.now() - gridLoaded < 30_000) {
+      const loadingVisible = await page.evaluate(`(function(){
+        var text = document.body.innerText || "";
+        return /loading/i.test(text.slice(0, 2000));
+      })()`) as boolean;
+      if (!loadingVisible) break;
+      await page.waitForTimeout(1_000);
+    }
+    await page.waitForTimeout(2_000);
+    await this.dismissBlockingOverlays(page).catch(() => undefined);
+    this.logStep("import-csv:on-lists-page", { href: page.url() });
+    await this.browser.screenshot("import-step1-lists-page").catch(() => undefined);
+
+    // Click the "Import List" button. It's in the main toolbar area.
+    // Use multiple click strategies and retry to handle timing issues.
+    let importModalOpened = false;
+
+    for (let attempt = 0; attempt < 3 && !importModalOpened; attempt++) {
+      this.logStep("import-csv:click-attempt", { attempt });
+
+      // Strategy: Find and click the Import List button using evaluate to
+      // ensure we click the actual DOM element (not just at coordinates).
+      await page.evaluate(`(function(){
+        var all = document.querySelectorAll("div, span, button");
+        for (var i = 0; i < all.length; i++) {
+          var ownText = "";
+          for (var j = 0; j < all[i].childNodes.length; j++) {
+            if (all[i].childNodes[j].nodeType === 3) ownText += all[i].childNodes[j].textContent;
+          }
+          ownText = ownText.trim();
+          if (/^import\\s*list$/i.test(ownText)) {
+            var el = all[i].closest("button") || all[i].closest("[class*='Button']") || all[i];
+            el.click();
+            return true;
+          }
+        }
+        return false;
+      })()`);
+
+      this.logStep("import-csv:import-list-button-clicked", { attempt });
+
+      // Wait for the Import Properties modal to appear
+      const modalStarted = Date.now();
+      while (Date.now() - modalStarted < 10_000) {
+        const hasFileInput = await page.locator('input[type="file"]').count().catch(() => 0);
+        if (hasFileInput > 0) {
+          importModalOpened = true;
+          this.logStep("import-csv:modal-detected-with-file-input");
+          break;
+        }
+        // Also check for the modal text
+        const hasImportModal = await page.evaluate(`(function(){
+          var text = document.body.innerText || "";
+          return /import properties|choose file|download template/i.test(text);
+        })()`) as boolean;
+        if (hasImportModal) {
+          importModalOpened = true;
+          this.logStep("import-csv:modal-detected-by-text");
+          break;
+        }
+        await page.waitForTimeout(500);
+      }
+
+      if (!importModalOpened) {
+        // Try coordinate-based click as fallback
+        const importRect = await page.evaluate(`(function(){
+          var all = document.querySelectorAll("div, span, button");
+          for (var i = 0; i < all.length; i++) {
+            var ownText = "";
+            for (var j = 0; j < all[i].childNodes.length; j++) {
+              if (all[i].childNodes[j].nodeType === 3) ownText += all[i].childNodes[j].textContent;
+            }
+            ownText = ownText.trim();
+            if (/^import\\s*list$/i.test(ownText)) {
+              var btn = all[i].closest("button") || all[i];
+              var r = btn.getBoundingClientRect();
+              if (r.width > 0 && r.height > 0) {
+                return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2) };
+              }
+            }
+          }
+          return null;
+        })()`) as { x: number; y: number } | null;
+
+        if (importRect) {
+          await page.mouse.click(importRect.x, importRect.y);
+          this.logStep("import-csv:coordinate-click", importRect);
+          await page.waitForTimeout(3_000);
+        }
+      }
+    }
+
+    await this.browser.screenshot("import-step2-after-import-click").catch(() => undefined);
+
+    if (!importModalOpened) {
+      // Last resort: check if file input appeared
+      const hasFile = await page.locator('input[type="file"]').count().catch(() => 0);
+      if (hasFile > 0) {
+        importModalOpened = true;
+      } else {
+        throw new BridgeError("DOM_SELECTOR_MISSING", "Import Properties modal did not appear after clicking Import List");
+      }
+    }
+
+    // The Import Properties modal should now be visible with a "Choose File" button
+    // containing an input[type="file"] that accepts .csv, .xls, .xlsx files.
+    // Wait for the file input to appear (modal may take time to render).
+    let fileInputFound = false;
+    const fileInputStarted = Date.now();
+    while (Date.now() - fileInputStarted < 15_000) {
+      const fileInput = page.locator('input[type="file"]').first();
+      if (await fileInput.count()) {
+        await fileInput.setInputFiles(options.csvPath);
+        fileInputFound = true;
+        this.logStep("import-csv:file-uploaded-via-input");
+        break;
+      }
+      await page.waitForTimeout(1_000);
+    }
+
+    if (!fileInputFound) {
+      await this.browser.screenshot("import-csv-no-file-input").catch(() => undefined);
+      throw new BridgeError("DOM_SELECTOR_MISSING", "Could not find file upload input on import page");
+    }
+
+    await page.waitForTimeout(3_000);
+    await this.browser.screenshot("import-step3-after-upload").catch(() => undefined);
+
+    // Column mapping step - PropStream shows a mapping UI after upload
+    // We need to map: Address, City, State, Zip
+    // Try clicking "Next" or "Continue" to proceed through steps
+    for (let step = 0; step < 3; step++) {
+      await this.dismissBlockingOverlays(page).catch(() => undefined);
+
+      // Check if we're on a column mapping page
+      const hasMapping = await page.evaluate(`(function(){
+        var text = document.body.innerText || "";
+        return /column map|map.*column|field map|match.*field|address.*city.*state/i.test(text);
+      })()`) as boolean;
+
+      if (hasMapping) {
+        this.logStep("import-csv:mapping-page-detected");
+        await this.browser.screenshot(`import-step4-mapping-${step}`).catch(() => undefined);
+
+        // Try to auto-map columns - PropStream usually auto-detects Address/City/State/Zip
+        // If dropdowns exist, try to select the right values
+        await page.evaluate(`(function(){
+          var selects = document.querySelectorAll("select");
+          var mappings = { "address": "Address", "city": "City", "state": "State", "zip": "Zip" };
+          for (var i = 0; i < selects.length; i++) {
+            var label = "";
+            var prev = selects[i].previousElementSibling;
+            if (prev) label = (prev.textContent || "").trim().toLowerCase();
+            var parent = selects[i].closest("div, tr, li");
+            if (parent) {
+              var parentText = (parent.textContent || "").toLowerCase();
+              for (var key in mappings) {
+                if (parentText.includes(key) || label.includes(key)) {
+                  for (var j = 0; j < selects[i].options.length; j++) {
+                    var optText = selects[i].options[j].text.toLowerCase();
+                    if (optText.includes(key) || optText === mappings[key].toLowerCase()) {
+                      selects[i].selectedIndex = j;
+                      selects[i].dispatchEvent(new Event("change", { bubbles: true }));
+                      break;
+                    }
+                  }
+                }
+              }
+            }
+          }
+        })()`);
+        this.logStep("import-csv:columns-mapped");
+      }
+
+      // Enter the list name if there's a name input
+      const nameInput = page.locator('input[placeholder*="name" i], input[placeholder*="list" i], input[name*="name" i], input[name*="list" i]').first();
+      if (await nameInput.isVisible().catch(() => false)) {
+        await nameInput.click();
+        await nameInput.fill(options.listName);
+        this.logStep("import-csv:list-name-entered", { listName: options.listName });
+      }
+
+      // Also try using the list chooser if present
+      await this.chooseListIfPresent(page, options.listName).catch(() => undefined);
+
+      // Click Next/Continue/Import/Submit
+      const nextClicked =
+        await this.clickVisibleButton(page, /^next$/i) ||
+        await this.clickVisibleButton(page, /^continue$/i) ||
+        await this.clickVisibleButton(page, /^import$/i) ||
+        await this.clickVisibleButton(page, /^submit$/i) ||
+        await this.clickVisibleButton(page, /^upload$/i) ||
+        await this.clickVisibleButton(page, /^save$/i) ||
+        await this.clickVisibleButton(page, /^done$/i) ||
+        await this.clickVisibleButton(page, /^finish$/i);
+
+      if (nextClicked) {
+        this.logStep("import-csv:next-clicked", { step });
+        await page.waitForTimeout(3_000);
+        await this.browser.screenshot(`import-step5-after-next-${step}`).catch(() => undefined);
+      } else {
+        break;
+      }
+    }
+
+    // Wait for the "Add to Marketing List" Save button to become active.
+    // PropStream shows a spinner on Save while processing the CSV. For large
+    // files (3000+ addresses) this can take 60-120 seconds.
+    const saveWaitStarted = Date.now();
+    const maxSaveWaitMs = 180_000;
+    let saveClicked = false;
+
+    while (Date.now() - saveWaitStarted < maxSaveWaitMs) {
+      // Check if the "Add to Marketing List" dialog is visible
+      const hasMarketingListDialog = await page.evaluate(`(function(){
+        var text = document.body.innerText || "";
+        return /add to marketing list/i.test(text);
+      })()`) as boolean;
+
+      if (!hasMarketingListDialog) {
+        // Dialog dismissed — import may have completed
+        break;
+      }
+
+      // Enter list name if the input is visible but empty
+      const nameInputStill = page.locator('input[placeholder*="name" i], input[placeholder*="list" i], input[role="combobox"]').first();
+      if (await nameInputStill.isVisible().catch(() => false)) {
+        const currentVal = await nameInputStill.inputValue().catch(() => "");
+        if (!currentVal || currentVal !== options.listName) {
+          await nameInputStill.click().catch(() => undefined);
+          await nameInputStill.fill(options.listName).catch(() => undefined);
+        }
+      }
+
+      // Check if Save button is active (no spinner/loading)
+      const saveButtonState = await page.evaluate(`(function(){
+        var buttons = document.querySelectorAll("button, [role='button']");
+        for (var i = 0; i < buttons.length; i++) {
+          var text = (buttons[i].textContent || "").trim();
+          if (/^save$/i.test(text)) {
+            var disabled = buttons[i].disabled || buttons[i].getAttribute("disabled") !== null;
+            var hasSpinner = buttons[i].querySelector("svg, .spinner, [class*='spin'], [class*='load']") !== null;
+            var opacity = window.getComputedStyle(buttons[i]).opacity;
+            return { found: true, disabled: disabled, hasSpinner: hasSpinner, opacity: opacity };
+          }
+        }
+        return { found: false };
+      })()`) as { found: boolean; disabled?: boolean; hasSpinner?: boolean; opacity?: string };
+
+      if (saveButtonState.found && !saveButtonState.disabled && !saveButtonState.hasSpinner && saveButtonState.opacity !== "0.5") {
+        this.logStep("import-csv:save-button-active", saveButtonState);
+        await this.clickVisibleButton(page, /^save$/i);
+        saveClicked = true;
+        this.logStep("import-csv:save-clicked");
+        await page.waitForTimeout(5_000);
+        break;
+      }
+
+      this.logStep("import-csv:waiting-for-save", {
+        elapsed: Math.round((Date.now() - saveWaitStarted) / 1000),
+        saveState: saveButtonState,
+      });
+      await page.waitForTimeout(5_000);
+    }
+
+    if (!saveClicked) {
+      // Final attempt — force-click Save regardless of state
+      const forceClicked = await this.clickVisibleButton(page, /^save$/i);
+      this.logStep("import-csv:force-save-attempt", { clicked: forceClicked });
+      await page.waitForTimeout(10_000);
+    }
+
+    await this.dismissBlockingOverlays(page).catch(() => undefined);
+    await this.browser.screenshot("import-step6-complete").catch(() => undefined);
+
+    // Check for success indicators
+    const bodyText = await page.locator("body").innerText().catch(() => "");
+    const successMatch = bodyText.match(/(\d[\d,]*)\s*(?:records?|properties|rows?|contacts?)\s*(?:imported|added|uploaded|processed|matched|found)/i);
+    const imported = successMatch ? Number(successMatch[1].replace(/,/g, "")) : 0;
+
+    this.logStep("import-csv:complete", {
+      listName: options.listName,
+      imported,
+      url: page.url(),
+      saveClicked,
+    });
+
+    // Accept any confirmation dialogs
+    await this.clickByText(page, /^ok$/i).catch(() => undefined);
+    await this.clickByText(page, /^close$/i).catch(() => undefined);
+    await this.clickByText(page, /^done$/i).catch(() => undefined);
+
+    return { imported, listName: options.listName };
   }
 }

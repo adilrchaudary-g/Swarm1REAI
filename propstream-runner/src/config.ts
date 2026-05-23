@@ -1,4 +1,18 @@
 import path from "node:path";
+import fs from "node:fs";
+
+const repoEnv = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..", "..", ".env");
+if (fs.existsSync(repoEnv)) {
+  for (const line of fs.readFileSync(repoEnv, "utf-8").split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq === -1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    const val = trimmed.slice(eq + 1).trim();
+    if (!process.env[key]) process.env[key] = val;
+  }
+}
 
 function boolFromEnv(input: string | undefined, fallback: boolean) {
   if (input == null || input === "") return fallback;
@@ -61,6 +75,7 @@ export type RunnerConfig = {
   cookieStorePath: string;
   caseNetBaseUrl: string;
   courtRecordsArchiveRoot: string;
+  fsboArchiveRoot: string;
 };
 
 export function loadConfig(): RunnerConfig {
@@ -133,5 +148,8 @@ export function loadConfig(): RunnerConfig {
     courtRecordsArchiveRoot:
       process.env.COURT_RECORDS_ARCHIVE_ROOT ||
       path.join(repoRoot, "lead-vault", "acquisition", "court-records"),
+    fsboArchiveRoot:
+      process.env.FSBO_ARCHIVE_ROOT ||
+      path.join(repoRoot, "lead-vault", "acquisition", "fsbo"),
   };
 }

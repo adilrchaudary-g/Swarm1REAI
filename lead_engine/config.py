@@ -47,8 +47,8 @@ MIN_SPREAD = 20_000
 DISCOUNT_FACTOR = 0.70
 ASSIGNMENT_FEE = 25_000
 
-BLOCKED_STATES = {"SC", "IL", "OK", "KY", "PA", "VA"}
-HIGH_FRICTION_STATES = {"CT", "OR", "MD", "AZ", "CA", "IA", "TN", "IN", "WI", "ND"}
+BLOCKED_STATES = {"SC", "IL", "OK", "KY", "PA", "VA", "NC", "NE", "NY"}
+HIGH_FRICTION_STATES = {"CT", "OR", "MD", "AZ", "CA", "IA", "TN", "IN", "WI", "ND", "AL", "OH"}
 HIGH_FRICTION_PENALTY = -30
 
 SIGNAL_MAP = {

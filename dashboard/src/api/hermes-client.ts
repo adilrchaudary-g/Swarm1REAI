@@ -1,4 +1,4 @@
-import type { Lead, PhoneRecord, PipelineStats, SourceAdapter, KpiSummary, FollowUp, MarketInfo, SocialComment, SocialCampaign, SocialBanditStats, FoiaRequest, WaterShutoffRecord, WaterShutoffStats, FsboListing, FsboMarket, FsboStats, CourtRecordCounty, CourtRecordCase, CourtRecordStats, CourtRecordScrapeStatus } from './types'
+import type { Lead, PhoneRecord, PipelineStats, SourceAdapter, KpiSummary, FollowUp, MarketInfo, SocialComment, SocialCampaign, SocialBanditStats, FoiaRequest, WaterShutoffRecord, WaterShutoffStats, FsboListing, FsboMarket, FsboStats, FsboScrapeStatus, CourtRecordCounty, CourtRecordCase, CourtRecordStats, CourtRecordScrapeStatus, CountyScouting, CountyScoutingStats, ScoutPipelineStatus, DistressedProperty, CallRecording, CallRecordingStats, UnderwritingReport, EvaluationStatus, ConversionFunnel, CallMetrics, DailyActivity, SourceRoi } from './types'
 
 const BASE = '/api'
 
@@ -121,12 +121,41 @@ export const hermesClient = {
 
   quota: () => get<Record<string, number>>('/quota'),
 
+  evaluation: {
+    run: () => post<{ status: string }>('/evaluation/run'),
+    status: () => get<EvaluationStatus>('/evaluation/status'),
+  },
+
+  underwriting: {
+    report: (leadId: string) => get<UnderwritingReport>(`/underwriting/report/${leadId}`),
+    reports: (status?: string) => {
+      const qs = status ? `?status=${status}` : ''
+      return get<UnderwritingReport[]>(`/underwriting/reports${qs}`)
+    },
+    run: (leadId: string) => post<{ status: string; lead_id: string }>(`/underwriting/run/${leadId}`),
+    refresh: (leadId: string) => post<{ status: string; lead_id: string }>(`/underwriting/refresh/${leadId}`),
+  },
+
   kpi: {
     summary: () => get<KpiSummary>('/kpi/summary'),
+    funnel: (days = 30) => get<ConversionFunnel>(`/kpi/funnel?days=${days}`),
+    calls: (days = 7) => get<CallMetrics>(`/kpi/calls?days=${days}`),
+    daily: (days = 30) => get<DailyActivity[]>(`/kpi/daily?days=${days}`),
+    sourceRoi: () => get<SourceRoi[]>('/kpi/source-roi'),
   },
 
   markets: {
     list: () => get<{ status: string; markets: MarketInfo[] }>('/markets'),
+  },
+
+  pendingVerification: {
+    stats: () => get<{ total_pending: number; by_source: Record<string, Record<string, number>>; items: any[] }>('/pending-verification'),
+    verifyAll: () => post<{ status: string; job_id?: string; address_count?: number; message?: string }>('/verify-batch', {}),
+  },
+
+  jobs: {
+    list: () => get<any[]>('/jobs'),
+    get: (jobId: string) => get<any>(`/jobs/${jobId}`),
   },
 
   followUps: {
@@ -210,6 +239,8 @@ export const hermesClient = {
 
   fsbo: {
     stats: () => get<FsboStats>('/fsbo/stats'),
+    scrapeStatus: () => get<FsboScrapeStatus>('/fsbo/scrape-status'),
+    scrape: () => post<{ status: string; job_id?: string; message?: string }>('/fsbo/scrape', {}),
 
     markets: {
       list: () => get<FsboMarket[]>('/fsbo/markets'),
@@ -277,5 +308,70 @@ export const hermesClient = {
 
     ingest: (caseIds: number[]) =>
       post<{ status: string; ingested: number; leads_created: number }>('/court-records/ingest', { case_ids: caseIds }),
+  },
+
+  counties: {
+    stats: () => get<CountyScoutingStats>('/counties/stats'),
+    list: (params?: { state?: string; tier?: string; scouted_only?: boolean; limit?: number; offset?: number }) => {
+      const qs = new URLSearchParams()
+      if (params) {
+        for (const [k, v] of Object.entries(params)) {
+          if (v !== undefined) qs.set(k, String(v))
+        }
+      }
+      const query = qs.toString()
+      return get<CountyScouting[]>(`/counties${query ? `?${query}` : ''}`)
+    },
+    top: (limit = 50) => get<CountyScouting[]>(`/counties/top?limit=${limit}`),
+    scoutQueue: (batchSize = 50) => get<CountyScouting[]>(`/counties/scout-queue?batch_size=${batchSize}`),
+    scoutStatus: () => get<ScoutPipelineStatus>('/counties/scout-status'),
+    seed: () => post<{ inserted: number; skipped: number }>('/counties/seed', {}),
+    scout: (batchSize = 50) => post<{ status: string; counties?: number }>('/counties/scout', { batch_size: batchSize }),
+    harvest: (batchSize = 10, signal = 'pre_foreclosure') =>
+      post<{ status: string; counties?: number; signal?: string }>('/counties/harvest', { batch_size: batchSize, signal }),
+    importScoutResults: (results: unknown[]) =>
+      post<{ updated: number }>('/counties/import-scout-results', { results }),
+  },
+
+  distressedProperties: {
+    list: (params?: { severity?: number; city?: string; limit?: number }) => {
+      const qs = new URLSearchParams()
+      if (params) {
+        for (const [k, v] of Object.entries(params)) {
+          if (v !== undefined) qs.set(k, String(v))
+        }
+      }
+      const query = qs.toString()
+      return get<{ total: number; properties: DistressedProperty[]; cities: string[] }>(`/distressed-properties${query ? `?${query}` : ''}`)
+    },
+  },
+
+  callRecordings: {
+    list: (params?: { search?: string; score?: string; motivation?: string; date_from?: string; date_to?: string; limit?: number; offset?: number }) => {
+      const qs = new URLSearchParams()
+      if (params) {
+        for (const [k, v] of Object.entries(params)) {
+          if (v !== undefined) qs.set(k, String(v))
+        }
+      }
+      const query = qs.toString()
+      return get<CallRecording[]>(`/call-recordings${query ? `?${query}` : ''}`)
+    },
+    get: (id: number) => get<CallRecording>(`/call-recordings/${id}`),
+    stats: () => get<CallRecordingStats>('/call-recordings/stats'),
+    create: async (formData: FormData) => {
+      const res = await fetch(`${BASE}/call-recordings`, { method: 'POST', body: formData })
+      if (!res.ok) throw new Error(`POST /call-recordings: ${res.status}`)
+      return res.json() as Promise<{ status: string; id: number }>
+    },
+    update: (id: number, data: Record<string, unknown>) =>
+      post<{ status: string; id: number }>(`/call-recordings/${id}`, data),
+    delete: (id: number) =>
+      post<{ status: string; id: number }>(`/call-recordings/${id}/delete`),
+    transcribe: (id: number) =>
+      post<{ status: string; id: number }>(`/call-recordings/${id}/transcribe`),
+    grade: (id: number) =>
+      post<{ status: string; id: number }>(`/call-recordings/${id}/grade`),
+    audioUrl: (id: number) => `${BASE}/call-recordings/${id}/audio`,
   },
 }
