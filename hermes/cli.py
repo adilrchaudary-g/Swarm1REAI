@@ -78,7 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
     discord_ref_parser.add_argument("--query-text")
 
     serve_parser = subparsers.add_parser("serve", help="Run the Hermes HTTP runtime")
-    serve_parser.add_argument("--host", default="127.0.0.1")
+    serve_parser.add_argument("--host", default="0.0.0.0")
     serve_parser.add_argument("--port", type=int, default=8765)
     serve_parser.add_argument(
         "--static-dir",

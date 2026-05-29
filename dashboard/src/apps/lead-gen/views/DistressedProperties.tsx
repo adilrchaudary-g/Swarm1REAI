@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { X } from 'lucide-react'
 import { hermesClient } from '../../../api/hermes-client'
 import type { DistressedProperty } from '../../../api/types'
 
@@ -175,7 +176,7 @@ export function DistressedProperties() {
                 background: '#000a', border: 'none', color: '#fff', fontSize: 18,
                 width: 28, height: 28, borderRadius: 4, cursor: 'pointer', zIndex: 10,
               }}
-            >&times;</button>
+            ><X size={16} /></button>
           </div>
 
           <div style={{ padding: 16 }}>

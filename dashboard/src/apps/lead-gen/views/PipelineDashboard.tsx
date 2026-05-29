@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { X } from 'lucide-react'
 import { hermesClient } from '../../../api/hermes-client'
 import type { PipelineStats } from '../../../api/types'
 
@@ -129,7 +130,7 @@ export function PipelineDashboard() {
             onClick={() => setRunOutput(null)}
             style={{ float: 'right', background: 'none', border: 'none', color: '#666', cursor: 'pointer' }}
           >
-            &times;
+            <X size={16} />
           </button>
         </div>
       )}

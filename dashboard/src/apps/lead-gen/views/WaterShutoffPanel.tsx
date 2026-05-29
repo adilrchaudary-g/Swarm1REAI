@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { X } from 'lucide-react'
 import { hermesClient } from '../../../api/hermes-client'
 import type { FoiaRequest } from '../../../api/types'
 
@@ -585,7 +586,7 @@ function ImportView() {
             <button
               onClick={() => setImportResult(null)}
               style={{ background: 'none', border: 'none', color: '#666', cursor: 'pointer', fontSize: 16 }}
-            >&times;</button>
+            ><X size={16} /></button>
           </div>
         )}
 
@@ -877,7 +878,7 @@ function RecordsView() {
           <button
             onClick={() => setIngestResult(null)}
             style={{ background: 'none', border: 'none', color: '#666', cursor: 'pointer', fontSize: 16 }}
-          >&times;</button>
+          ><X size={16} /></button>
         </div>
       )}
 

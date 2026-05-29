@@ -1,5 +1,6 @@
-import { useState, useMemo, useCallback } from 'react'
+import { useState, useMemo, useCallback, useEffect } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { Phone, X, ArrowRight, PhoneCall } from 'lucide-react'
 import { hermesClient } from '../../../api/hermes-client'
 import type { Lead } from '../../../api/types'
 
@@ -8,6 +9,21 @@ function formatPhone(raw: string): string {
   const d = digits.length === 11 && digits[0] === '1' ? digits.slice(1) : digits
   if (d.length === 10) return `${d.slice(0, 3)}-${d.slice(3, 6)}-${d.slice(6)}`
   return raw
+}
+
+function toTelDigits(raw: string): string {
+  const digits = raw.replace(/\D/g, '')
+  return digits.length === 10 ? `1${digits}` : digits
+}
+
+function useIsMobile() {
+  const [mobile, setMobile] = useState(window.innerWidth < 768)
+  useEffect(() => {
+    const handler = () => setMobile(window.innerWidth < 768)
+    window.addEventListener('resize', handler)
+    return () => window.removeEventListener('resize', handler)
+  }, [])
+  return mobile
 }
 
 const TIER_COLORS: Record<string, string> = {
@@ -24,6 +40,7 @@ interface Props {
 
 export function DialMode({ leads, onClose }: Props) {
   const queryClient = useQueryClient()
+  const isMobile = useIsMobile()
   const [currentIndex, setCurrentIndex] = useState(0)
   const [phase, setPhase] = useState<Phase>('idle')
   const [showDetail, setShowDetail] = useState(false)
@@ -31,6 +48,7 @@ export function DialMode({ leads, onClose }: Props) {
   const [fuDate, setFuDate] = useState('')
   const [skippedIds, setSkippedIds] = useState<Set<string>>(new Set())
   const [voicemailIds, setVoicemailIds] = useState<string[]>([])
+  const [lastBadNumberId, setLastBadNumberId] = useState<string | null>(null)
 
   const queue = useMemo(() => {
     const main = leads.filter((l) => !skippedIds.has(l.lead_id) && !voicemailIds.includes(l.lead_id))
@@ -46,6 +64,7 @@ export function DialMode({ leads, onClose }: Props) {
   const hasNext = currentIndex < total - 1
   const rawPhone = lead?.callable_phones?.[0]?.phone_value || lead?.callable_phones?.[0]?.phone_digits || null
   const phone = rawPhone ? formatPhone(rawPhone) : null
+  const telHref = rawPhone ? `tel:+${toTelDigits(rawPhone)}` : null
 
   const invalidate = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['queue-all'] })
@@ -77,6 +96,20 @@ export function DialMode({ leads, onClose }: Props) {
     },
   })
 
+  const undoBadNumber = useMutation({
+    mutationFn: (leadId: string) =>
+      hermesClient.leads.updateStatus(leadId, 'queued', 'Undo bad number — restored to queue'),
+    onSuccess: () => invalidate(),
+  })
+
+  async function handleUndoBadNumber() {
+    if (!lastBadNumberId) return
+    const id = lastBadNumberId
+    setLastBadNumberId(null)
+    setSkippedIds((s) => { const next = new Set(s); next.delete(id); return next })
+    await undoBadNumber.mutateAsync(id)
+  }
+
   function advanceNext(skipLeadId?: string) {
     if (skipLeadId) {
       setSkippedIds((s) => new Set(s).add(skipLeadId))
@@ -92,8 +125,8 @@ export function DialMode({ leads, onClose }: Props) {
     }
   }
 
-  function handleAnswered() { setPhase('answered') }
-  function handleNoAnswer() { setPhase('no_answer') }
+  function handleAnswered() { setLastBadNumberId(null); setPhase('answered') }
+  function handleNoAnswer() { setLastBadNumberId(null); setPhase('no_answer') }
 
   function handleInterested() {
     setPhase('interested')
@@ -101,6 +134,7 @@ export function DialMode({ leads, onClose }: Props) {
 
   async function handleNotInterested() {
     const id = lead!.lead_id
+    setLastBadNumberId(null)
     await updateStatus.mutateAsync({ status: 'not_interested', reason: 'Not interested — dial time' })
     advanceNext(id)
   }
@@ -108,11 +142,13 @@ export function DialMode({ leads, onClose }: Props) {
   async function handleBadNumber() {
     const id = lead!.lead_id
     await archiveLead.mutateAsync()
+    setLastBadNumberId(id)
     advanceNext(id)
   }
 
   async function handleVoicemail() {
     const id = lead!.lead_id
+    setLastBadNumberId(null)
     await updateStatus.mutateAsync({ status: 'contacted', reason: 'Voicemail — will retry' })
     setVoicemailIds((ids) => [...ids.filter((v) => v !== id), id])
     setPhase('idle')
@@ -141,13 +177,17 @@ export function DialMode({ leads, onClose }: Props) {
     advanceNext(lead!.lead_id)
   }
 
+  const mobBtn: React.CSSProperties = isMobile
+    ? { minHeight: 48, fontSize: 15 }
+    : {}
+
   if (!lead) {
     return (
-      <Overlay onClose={onClose}>
+      <Overlay onClose={onClose} isMobile={isMobile}>
         <div style={{ textAlign: 'center', padding: 40 }}>
           <div style={{ fontSize: 24, color: '#22c55e', marginBottom: 12 }}>All Caught Up</div>
           <div style={{ color: '#888', fontSize: 14 }}>No more leads in the queue.</div>
-          <button onClick={onClose} style={{ ...btn, background: '#6366f1', color: '#fff', marginTop: 20, padding: '10px 24px' }}>
+          <button onClick={onClose} style={{ ...btn, ...mobBtn, background: '#6366f1', color: '#fff', marginTop: 20, padding: '10px 24px' }}>
             Close
           </button>
         </div>
@@ -158,14 +198,14 @@ export function DialMode({ leads, onClose }: Props) {
   const tierColor = TIER_COLORS[lead.motivation_tier || ''] || '#666'
 
   return (
-    <Overlay onClose={onClose}>
+    <Overlay onClose={onClose} isMobile={isMobile}>
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <div style={{ color: '#6366f1', fontSize: 13, fontWeight: 700, letterSpacing: 1 }}>DIAL TIME</div>
           <span style={{ color: '#444', fontSize: 12 }}>{currentIndex + 1} / {total}</span>
         </div>
-        <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#666', cursor: 'pointer', fontSize: 20 }}>&times;</button>
+        <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#666', cursor: 'pointer', display: 'flex', padding: 8 }}><X size={20} /></button>
       </div>
 
       {/* Progress bar */}
@@ -174,47 +214,67 @@ export function DialMode({ leads, onClose }: Props) {
       </div>
 
       {/* Lead card */}
-      <div style={{ background: '#0d0d14', border: '1px solid #2a2a3e', borderRadius: 10, padding: 20, marginBottom: 16 }}>
+      <div style={{ background: '#0d0d14', border: '1px solid #2a2a3e', borderRadius: 10, padding: isMobile ? 16 : 20, marginBottom: 16 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <div>
-            <div style={{ color: '#e0e0e0', fontSize: 18, fontWeight: 600, marginBottom: 4 }}>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ color: '#e0e0e0', fontSize: isMobile ? 16 : 18, fontWeight: 600, marginBottom: 4 }}>
               {lead.owner_name || 'Unknown Owner'}
             </div>
-            <div style={{ color: '#888', fontSize: 14, marginBottom: 12 }}>
+            <div style={{ color: '#888', fontSize: isMobile ? 13 : 14, marginBottom: 8 }}>
               {lead.address_full || lead.address_street || '—'}
             </div>
-            {lead.address_city && (
-              <div style={{ color: '#555', fontSize: 12, marginBottom: 12 }}>
-                {[lead.address_city, lead.address_state, lead.address_zip].filter(Boolean).join(', ')}
-              </div>
-            )}
           </div>
           <span style={{
             padding: '3px 10px', borderRadius: 4, fontSize: 11, fontWeight: 600,
-            color: tierColor, background: tierColor + '20',
+            color: tierColor, background: tierColor + '20', whiteSpace: 'nowrap', flexShrink: 0,
           }}>
             {lead.motivation_tier} {lead.motivation_score ?? ''}
           </span>
         </div>
 
-        {/* Phone number */}
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 8,
-          padding: '10px 14px', background: '#111118', borderRadius: 6, marginBottom: 12,
-        }}>
-          <span style={{ color: '#22c55e', fontSize: 18 }}>&#9742;</span>
-          <span style={{ color: phone ? '#e0e0e0' : '#ef4444', fontSize: 22, fontWeight: 700, letterSpacing: 1 }}>
-            {phone || 'No phone on file'}
-          </span>
-          {lead.callable_phones?.[0]?.phone_type && (
-            <span style={{ color: '#555', fontSize: 11, marginLeft: 4 }}>
-              ({lead.callable_phones[0].phone_type})
+        {/* Phone number — tappable on mobile */}
+        {telHref ? (
+          <a
+            href={telHref}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 10,
+              padding: isMobile ? '14px 16px' : '10px 14px',
+              background: isMobile ? '#0f2a1a' : '#111118',
+              border: isMobile ? '1px solid #1a3d2a' : 'none',
+              borderRadius: 8, marginBottom: 12,
+              textDecoration: 'none', cursor: 'pointer',
+              WebkitTapHighlightColor: 'transparent',
+            }}
+          >
+            {isMobile ? <PhoneCall size={22} color="#22c55e" /> : <Phone size={18} color="#22c55e" />}
+            <span style={{
+              color: '#e0e0e0', fontSize: isMobile ? 24 : 22, fontWeight: 700, letterSpacing: 1, flex: 1,
+            }}>
+              {phone}
             </span>
-          )}
-        </div>
+            {isMobile && (
+              <span style={{ color: '#22c55e', fontSize: 12, fontWeight: 600 }}>TAP TO CALL</span>
+            )}
+            {lead.callable_phones?.[0]?.phone_type && !isMobile && (
+              <span style={{ color: '#555', fontSize: 11 }}>
+                ({lead.callable_phones[0].phone_type})
+              </span>
+            )}
+          </a>
+        ) : (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 8,
+            padding: '10px 14px', background: '#111118', borderRadius: 6, marginBottom: 12,
+          }}>
+            <Phone size={18} color="#ef4444" />
+            <span style={{ color: '#ef4444', fontSize: isMobile ? 18 : 22, fontWeight: 700 }}>
+              No phone on file
+            </span>
+          </div>
+        )}
 
         {/* Quick stats row */}
-        <div style={{ display: 'flex', gap: 16, fontSize: 12 }}>
+        <div style={{ display: 'flex', gap: 16, fontSize: 12, flexWrap: 'wrap' }}>
           {lead.arv_estimate && (
             <div><span style={{ color: '#555' }}>ARV </span><span style={{ color: '#ccc' }}>${lead.arv_estimate.toLocaleString()}</span></div>
           )}
@@ -233,7 +293,7 @@ export function DialMode({ leads, onClose }: Props) {
       {/* View Details toggle */}
       <button
         onClick={() => setShowDetail(!showDetail)}
-        style={{ ...btn, background: '#1a1a2e', color: '#888', width: '100%', marginBottom: 12, padding: '8px 0', fontSize: 12 }}
+        style={{ ...btn, ...mobBtn, background: '#1a1a2e', color: '#888', width: '100%', marginBottom: 12, padding: '8px 0', fontSize: 12 }}
       >
         {showDetail ? 'Hide Details' : 'View Details'}
       </button>
@@ -250,15 +310,15 @@ export function DialMode({ leads, onClose }: Props) {
         </div>
       )}
 
-      {showDetail && <DetailExpand lead={lead} />}
+      {showDetail && <DetailExpand lead={lead} isMobile={isMobile} />}
 
       {/* Action buttons — phase-dependent */}
       {phase === 'idle' && (
         <div style={{ display: 'flex', gap: 10 }}>
-          <button onClick={handleAnswered} style={{ ...btn, flex: 1, background: '#22c55e', color: '#fff', padding: '12px 0', fontSize: 14, fontWeight: 700 }}>
+          <button onClick={handleAnswered} style={{ ...btn, ...mobBtn, flex: 1, background: '#22c55e', color: '#fff', padding: '12px 0', fontSize: 14, fontWeight: 700 }}>
             Answered
           </button>
-          <button onClick={handleNoAnswer} style={{ ...btn, flex: 1, background: '#ef4444', color: '#fff', padding: '12px 0', fontSize: 14, fontWeight: 700 }}>
+          <button onClick={handleNoAnswer} style={{ ...btn, ...mobBtn, flex: 1, background: '#ef4444', color: '#fff', padding: '12px 0', fontSize: 14, fontWeight: 700 }}>
             No Answer
           </button>
         </div>
@@ -266,13 +326,13 @@ export function DialMode({ leads, onClose }: Props) {
 
       {phase === 'answered' && (
         <div style={{ display: 'flex', gap: 10 }}>
-          <button onClick={handleInterested} style={{ ...btn, flex: 1, background: '#22c55e20', color: '#22c55e', padding: '12px 0', fontSize: 13, fontWeight: 600 }}>
+          <button onClick={handleInterested} style={{ ...btn, ...mobBtn, flex: 1, background: '#22c55e20', color: '#22c55e', padding: '12px 0', fontSize: 13, fontWeight: 600 }}>
             Interested
           </button>
-          <button onClick={handleNotInterested} style={{ ...btn, flex: 1, background: '#ef444420', color: '#ef4444', padding: '12px 0', fontSize: 13, fontWeight: 600 }}>
+          <button onClick={handleNotInterested} style={{ ...btn, ...mobBtn, flex: 1, background: '#ef444420', color: '#ef4444', padding: '12px 0', fontSize: 13, fontWeight: 600 }}>
             Not Interested
           </button>
-          <button onClick={() => setPhase('idle')} style={{ ...btn, background: '#1e1e2e', color: '#666', padding: '12px 16px', fontSize: 12 }}>
+          <button onClick={() => setPhase('idle')} style={{ ...btn, ...mobBtn, background: '#1e1e2e', color: '#666', padding: '12px 16px', fontSize: 12 }}>
             Back
           </button>
         </div>
@@ -280,13 +340,13 @@ export function DialMode({ leads, onClose }: Props) {
 
       {phase === 'no_answer' && (
         <div style={{ display: 'flex', gap: 10 }}>
-          <button onClick={handleBadNumber} style={{ ...btn, flex: 1, background: '#ef444420', color: '#ef4444', padding: '12px 0', fontSize: 13, fontWeight: 600 }}>
+          <button onClick={handleBadNumber} style={{ ...btn, ...mobBtn, flex: 1, background: '#ef444420', color: '#ef4444', padding: '12px 0', fontSize: 13, fontWeight: 600 }}>
             Bad Number
           </button>
-          <button onClick={handleVoicemail} style={{ ...btn, flex: 1, background: '#eab30820', color: '#eab308', padding: '12px 0', fontSize: 13, fontWeight: 600 }}>
+          <button onClick={handleVoicemail} style={{ ...btn, ...mobBtn, flex: 1, background: '#eab30820', color: '#eab308', padding: '12px 0', fontSize: 13, fontWeight: 600 }}>
             Voicemail
           </button>
-          <button onClick={() => setPhase('idle')} style={{ ...btn, background: '#1e1e2e', color: '#666', padding: '12px 16px', fontSize: 12 }}>
+          <button onClick={() => setPhase('idle')} style={{ ...btn, ...mobBtn, background: '#1e1e2e', color: '#666', padding: '12px 16px', fontSize: 12 }}>
             Back
           </button>
         </div>
@@ -301,14 +361,14 @@ export function DialMode({ leads, onClose }: Props) {
             rows={3}
             style={{
               width: '100%', padding: '10px 12px', background: '#0a0a0f', border: '1px solid #2a2a3e',
-              borderRadius: 6, color: '#ccc', fontSize: 13, resize: 'vertical', marginBottom: 10, boxSizing: 'border-box',
+              borderRadius: 6, color: '#ccc', fontSize: isMobile ? 16 : 13, resize: 'vertical', marginBottom: 10, boxSizing: 'border-box',
             }}
           />
           <div style={{ display: 'flex', gap: 10 }}>
-            <button onClick={handleSaveInterested} style={{ ...btn, flex: 1, background: '#22c55e', color: '#fff', padding: '10px 0', fontSize: 13, fontWeight: 600 }}>
+            <button onClick={handleSaveInterested} style={{ ...btn, ...mobBtn, flex: 1, background: '#22c55e', color: '#fff', padding: '10px 0', fontSize: 13, fontWeight: 600 }}>
               Save & Schedule Follow-Up
             </button>
-            <button onClick={() => setPhase('answered')} style={{ ...btn, background: '#1e1e2e', color: '#666', padding: '10px 16px', fontSize: 12 }}>
+            <button onClick={() => setPhase('answered')} style={{ ...btn, ...mobBtn, background: '#1e1e2e', color: '#666', padding: '10px 16px', fontSize: 12 }}>
               Back
             </button>
           </div>
@@ -320,7 +380,7 @@ export function DialMode({ leads, onClose }: Props) {
           <div style={{ color: '#22c55e', fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
             Marked as Interested
           </div>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: isMobile ? 'stretch' : 'flex-end', flexDirection: isMobile ? 'column' : 'row' }}>
             <div style={{ flex: 1 }}>
               <label style={{ fontSize: 11, color: '#555', display: 'block', marginBottom: 4 }}>Follow-up date</label>
               <input
@@ -328,33 +388,46 @@ export function DialMode({ leads, onClose }: Props) {
                 value={fuDate}
                 onChange={(e) => setFuDate(e.target.value)}
                 style={{
-                  width: '100%', padding: '8px 10px', background: '#0a0a0f', border: '1px solid #2a2a3e',
-                  borderRadius: 4, color: '#ccc', fontSize: 13, boxSizing: 'border-box',
+                  width: '100%', padding: isMobile ? '12px 10px' : '8px 10px', background: '#0a0a0f', border: '1px solid #2a2a3e',
+                  borderRadius: 4, color: '#ccc', fontSize: isMobile ? 16 : 13, boxSizing: 'border-box',
                 }}
               />
             </div>
-            <button
-              onClick={handleSaveFollowUp}
-              disabled={!fuDate}
-              style={{ ...btn, background: fuDate ? '#eab308' : '#222', color: '#000', padding: '9px 18px', fontSize: 13, fontWeight: 600 }}
-            >
-              Save
-            </button>
-            <button onClick={handleSkipFollowUp} style={{ ...btn, background: '#1e1e2e', color: '#666', padding: '9px 14px', fontSize: 12 }}>
-              Skip
-            </button>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                onClick={handleSaveFollowUp}
+                disabled={!fuDate}
+                style={{ ...btn, ...mobBtn, flex: 1, background: fuDate ? '#eab308' : '#222', color: '#000', padding: '9px 18px', fontSize: 13, fontWeight: 600 }}
+              >
+                Save
+              </button>
+              <button onClick={handleSkipFollowUp} style={{ ...btn, ...mobBtn, flex: 1, background: '#1e1e2e', color: '#666', padding: '9px 14px', fontSize: 12 }}>
+                Skip
+              </button>
+            </div>
           </div>
         </div>
       )}
 
-      {/* Skip button always visible in idle */}
+      {/* Skip / Undo row — always visible in idle */}
       {phase === 'idle' && (
-        <button
-          onClick={() => advanceNext()}
-          style={{ ...btn, width: '100%', background: 'transparent', color: '#444', marginTop: 8, padding: '8px 0', fontSize: 11 }}
-        >
-          Skip Lead &rarr;
-        </button>
+        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+          {lastBadNumberId && (
+            <button
+              onClick={handleUndoBadNumber}
+              disabled={undoBadNumber.isPending}
+              style={{ ...btn, flex: 0, background: '#eab30820', color: '#eab308', padding: '8px 14px', fontSize: 11 }}
+            >
+              {undoBadNumber.isPending ? 'Undoing...' : 'Undo Bad #'}
+            </button>
+          )}
+          <button
+            onClick={() => { setLastBadNumberId(null); advanceNext() }}
+            style={{ ...btn, flex: 1, background: 'transparent', color: '#444', padding: '8px 0', fontSize: 11 }}
+          >
+            Skip Lead <ArrowRight size={12} style={{ marginLeft: 4, verticalAlign: 'middle' }} />
+          </button>
+        </div>
       )}
     </Overlay>
   )
@@ -364,16 +437,21 @@ const btn: React.CSSProperties = {
   border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 600,
 }
 
-function Overlay({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
+function Overlay({ children, onClose, isMobile }: { children: React.ReactNode; onClose: () => void; isMobile: boolean }) {
   return (
     <div
       style={{
         position: 'fixed', inset: 0, zIndex: 1000,
-        background: 'rgba(0,0,0,0.75)', display: 'flex', justifyContent: 'center', alignItems: 'center',
+        background: isMobile ? '#111118' : 'rgba(0,0,0,0.75)',
+        display: 'flex', justifyContent: 'center', alignItems: isMobile ? 'stretch' : 'center',
       }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
+      onClick={(e) => { if (!isMobile && e.target === e.currentTarget) onClose() }}
     >
-      <div style={{
+      <div style={isMobile ? {
+        width: '100%', height: '100%', overflow: 'auto',
+        background: '#111118', padding: '16px 16px env(safe-area-inset-bottom, 16px)',
+        boxSizing: 'border-box',
+      } : {
         width: 520, maxHeight: '90vh', overflow: 'auto',
         background: '#111118', border: '1px solid #2a2a3e', borderRadius: 12, padding: 24,
       }}>
@@ -383,7 +461,7 @@ function Overlay({ children, onClose }: { children: React.ReactNode; onClose: ()
   )
 }
 
-function DetailExpand({ lead }: { lead: Lead }) {
+function DetailExpand({ lead, isMobile }: { lead: Lead; isMobile: boolean }) {
   return (
     <div style={{
       background: '#0a0a0f', border: '1px solid #1e1e2e', borderRadius: 8, padding: 16, marginBottom: 16,
@@ -414,10 +492,27 @@ function DetailExpand({ lead }: { lead: Lead }) {
         <div>
           <div style={{ fontSize: 10, color: '#555', textTransform: 'uppercase', marginBottom: 4 }}>All Phones</div>
           {lead.callable_phones.map((p, i) => (
-            <div key={i} style={{ color: '#ccc', fontSize: 13 }}>
-              {formatPhone(p.phone_value)} <span style={{ color: '#555' }}>({p.phone_type})</span>
-              {p.dnc ? <span style={{ color: '#ef4444', marginLeft: 4 }}>DNC</span> : null}
-            </div>
+            isMobile ? (
+              <a
+                key={i}
+                href={`tel:+${toTelDigits(p.phone_value)}`}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8,
+                  padding: '8px 10px', marginBottom: 4, borderRadius: 6,
+                  background: '#111118', textDecoration: 'none',
+                }}
+              >
+                <Phone size={14} color="#22c55e" />
+                <span style={{ color: '#ccc', fontSize: 14 }}>{formatPhone(p.phone_value)}</span>
+                <span style={{ color: '#555', fontSize: 11 }}>({p.phone_type})</span>
+                {p.dnc ? <span style={{ color: '#ef4444', fontSize: 11, marginLeft: 4 }}>DNC</span> : null}
+              </a>
+            ) : (
+              <div key={i} style={{ color: '#ccc', fontSize: 13 }}>
+                {formatPhone(p.phone_value)} <span style={{ color: '#555' }}>({p.phone_type})</span>
+                {p.dnc ? <span style={{ color: '#ef4444', marginLeft: 4 }}>DNC</span> : null}
+              </div>
+            )
           ))}
         </div>
       )}

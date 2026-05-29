@@ -1,5 +1,6 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { X } from 'lucide-react'
 import { hermesClient } from '../../../api/hermes-client'
 import { useLeadStore } from '../../../store/lead-store'
 import { DialMode } from './DialMode'
@@ -150,7 +151,7 @@ function DetailPanel({ lead }: { lead: Lead }) {
         <button
           onClick={() => setActiveLead(null)}
           style={{ background: 'none', border: 'none', color: '#666', cursor: 'pointer', fontSize: 18 }}
-        >&times;</button>
+        ><X size={16} /></button>
       </div>
 
       <p style={{ fontWeight: 600, color: '#e0e0e0', fontSize: 14, margin: '0 0 2px' }}>{lead.address_full}</p>
@@ -592,7 +593,7 @@ export function CallList() {
                     <button
                       onClick={() => setPipelineOpen(false)}
                       style={{ background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: 14 }}
-                    >&times;</button>
+                    ><X size={16} /></button>
                   )}
                 </div>
                 <div className={`log-tablet${pipelineRunning ? ' active' : pipelineError ? ' error' : pipelineStatus?.phase === 'complete' ? ' complete' : ''}`}>

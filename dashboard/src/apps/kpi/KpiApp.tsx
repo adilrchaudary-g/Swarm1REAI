@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { hermesClient } from '../../api/hermes-client'
-import type { KpiSummary, FollowUp, DailyActivity, SourceRoi } from '../../api/types'
+import type { KpiSummary, FollowUp, SourceRoi } from '../../api/types'
 
 const OUTCOMES = [
   { value: 'no_answer', label: 'No Answer', color: '#888' },

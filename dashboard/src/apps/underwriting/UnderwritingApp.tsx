@@ -76,7 +76,7 @@ function DealHeader({ report, lead }: { report: UnderwritingReport; lead: Lead }
 // ── ARV Comparison ──────────────────────────────────────────
 
 function ArvComparison({ report }: { report: UnderwritingReport }) {
-  const sources = parseJson<{ source: string; value: number }[]>(report.arv_sources_json, [])
+  parseJson<{ source: string; value: number }[]>(report.arv_sources_json, [])
   const discrepancies = parseJson<{ field: string; spread_pct: number; note: string }[]>(report.discrepancies_json, [])
   const hasDisc = discrepancies.length > 0
 
@@ -333,7 +333,7 @@ function NoteInput({ leadId }: { leadId: string }) {
 
 // ── Action Bar ──────────────────────────────────────────────
 
-function ActionBar({ lead, report }: { lead: Lead; report: UnderwritingReport }) {
+function ActionBar({ lead, report: _report }: { lead: Lead; report: UnderwritingReport }) {
   const queryClient = useQueryClient()
   const [showFollowUp, setShowFollowUp] = useState(false)
   const [fuDate, setFuDate] = useState('')
