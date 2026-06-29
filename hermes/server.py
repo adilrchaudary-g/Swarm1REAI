@@ -4,6 +4,7 @@ import json
 import mimetypes
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -13,7 +14,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, unquote
 
 from .store import HermesStore
 
@@ -335,84 +336,449 @@ def _transcribe_and_grade(runtime: "HermesRuntime", rec_id: int) -> None:
         return
 
     runtime.store.update_call_recording(rec_id, {"transcript": transcript})
+    _auto_link_recording(runtime, rec_id)
     _grade_recording(runtime, rec_id, transcript)
 
 
-def _grade_recording(runtime: "HermesRuntime", rec_id: int, transcript: str) -> None:
-    """Grade a call transcript using Claude API (optional — skips if no key)."""
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        print(f"[call-recordings] Skipping grading for {rec_id} — no ANTHROPIC_API_KEY set")
+def _auto_link_recording(runtime: "HermesRuntime", rec_id: int) -> None:
+    """Try to match a recording to a lead by seller name + property address."""
+    rec = runtime.store.get_call_recording(rec_id)
+    if not rec or rec.get("lead_id"):
         return
+    name = rec.get("seller_name", "")
+    addr = rec.get("property_address", "")
+    if not name or name == "Unknown":
+        return
+    try:
+        with runtime.store._connect() as conn:
+            name_clauses = []
+            name_params = []
+            for part in name.lower().split():
+                if len(part) > 2:
+                    name_clauses.append("lower(o.owner_name) LIKE ?")
+                    name_params.append(f"%{part}%")
+            addr_clauses = []
+            addr_params = []
+            if addr:
+                street_part = addr.split(",")[0].strip()
+                for word in street_part.lower().split():
+                    if len(word) > 2 and word not in ("ave", "avenue", "st", "street", "rd", "road", "dr", "drive", "blvd", "ct", "ln", "pl", "way", "circle", "court", "lane", "place"):
+                        addr_clauses.append("lower(p.address_street) LIKE ?")
+                        addr_params.append(f"%{word}%")
+            if not name_clauses:
+                return
+            if name_clauses and addr_clauses:
+                where = f"({' AND '.join(name_clauses)}) AND ({' AND '.join(addr_clauses)})"
+                params = name_params + addr_params
+            else:
+                where = " AND ".join(name_clauses)
+                params = name_params
+            rows = conn.execute(
+                f"""SELECT l.lead_id FROM leads l
+                    JOIN owners o ON l.owner_id = o.owner_id
+                    JOIN properties p ON l.property_id = p.property_id
+                    WHERE {where} LIMIT 2""",
+                params,
+            ).fetchall()
+            if len(rows) == 1:
+                runtime.store.update_call_recording(rec_id, {"lead_id": rows[0]["lead_id"]})
+                print(f"[call-recordings] Auto-linked recording {rec_id} to lead {rows[0]['lead_id'][:40]}")
+    except Exception as exc:
+        print(f"[call-recordings] Auto-link failed for {rec_id}: {exc}")
 
-    prompt = f"""You are an expert real estate wholesaling call coach. Analyze this seller call transcript and produce two structured grades.
+
+_GRADE_PROMPT_TEMPLATE = """You are a real estate wholesaling call coach. Grade this cold call on two axes: the caller's battle performance and the seller's motivation.
 
 TRANSCRIPT:
 {transcript}
 
-IMPORTANT: Assume the caller is generally competent. Reserve low scores for clear breakdowns only.
+CRITICAL CONTEXT: This caller is hunting for the needle in the haystack — motivated sellers. They dial hundreds of leads. The SMART play on a dead seller is to qualify fast, stay professional, and move on. Do NOT penalize short calls when the seller clearly has zero motivation. Reserve harsh grades for calls where there WAS seller motivation or openness and the caller failed to capitalize.
 
-Respond with ONLY valid JSON in this exact format:
+BATTLE SCORE — grade the caller (1-10) relative to the opportunity on this call:
+
+- objection_handling: If seller showed ANY crack or hesitation, did the caller push through? On a hard dead seller, did they at least probe once before moving on? Score relative to what was possible.
+- conversation_control: Did they lead the call structure? Ask qualifying questions? On short dead-seller calls, did they efficiently qualify? That's good control.
+- kept_on_phone: Did they keep the seller talking as long as was PRODUCTIVE? Staying on with a dead seller wastes time. Keeping a warm seller engaged is skill. Grade relative to opportunity.
+- stayed_grounded: Were they calm, confident, professional? Did they handle rejection without getting rattled?
+
+SCORING GUIDE:
+- Dead seller + professional quick exit = 6-8 range (smart qualifying)
+- Dead seller + no probe at all = 4-5 (missed a chance to check)
+- Warm/Hot seller + extended conversation + good probing = 7-10
+- Warm/Hot seller + gave up too fast = 2-4 (missed real opportunity)
+
+SELLER MOTIVATION — how motivated is this seller to sell?
+
+Respond with ONLY valid JSON:
 {{
-  "my_performance": {{
-    "controlled_conversation": "yes/no with brief explanation",
-    "uncovered_motivation": "yes/no with brief explanation",
-    "handled_objections": "well/adequately/poorly with brief explanation",
-    "momentum_loss": "where momentum was lost, or 'none'",
-    "score": 7,
-    "summary": "1-2 sentence overall assessment"
+  "battle_score": {{
+    "objection_handling": 6,
+    "objection_notes": "brief explanation",
+    "conversation_control": 7,
+    "control_notes": "brief explanation",
+    "kept_on_phone": 5,
+    "phone_notes": "brief explanation",
+    "stayed_grounded": 8,
+    "grounded_notes": "brief explanation",
+    "overall": 7,
+    "summary": "1-2 sentence honest assessment"
   }},
   "seller_motivation": {{
-    "core_reason": "their primary reason for selling",
-    "motivation_level": 6,
-    "emotional_or_logical": "emotional/logical/mixed with brief explanation",
-    "timeline": "their selling timeline",
-    "overall_sentiment": "Hot",
-    "summary": "1-2 sentence assessment of seller readiness"
+    "core_reason": "why they would or wouldn't sell",
+    "motivation_level": 2,
+    "overall_sentiment": "Cold",
+    "summary": "1-2 sentence read on this seller"
   }},
-  "call_score": "Strong"
+  "call_score": "Average"
 }}
 
 For call_score use exactly one of: "Strong", "Average", "Needs Work"
 For overall_sentiment use exactly one of: "Hot", "Warm", "Cold", "Dead"
 """
 
+
+def _parse_grade_json(text: str) -> dict | None:
+    start = text.find("{")
+    end = text.rfind("}") + 1
+    if start >= 0 and end > start:
+        return json.loads(text[start:end])
+    return None
+
+
+def _grade_recording(runtime: "HermesRuntime", rec_id: int, transcript: str) -> None:
+    """Grade a call transcript using Claude CLI proxy first, API key fallback."""
+    prompt = _GRADE_PROMPT_TEMPLATE.format(transcript=transcript)
+    grades = None
+
+    # Try 1: Claude CLI proxy (no API key needed)
+    claude_bin = shutil.which("claude")
+    if claude_bin:
+        try:
+            print(f"[call-recordings] Grading {rec_id} via Claude CLI...")
+            result = subprocess.run(
+                [claude_bin, "-p", prompt],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                grades = _parse_grade_json(result.stdout)
+        except Exception as exc:
+            print(f"[call-recordings] CLI grading failed for {rec_id}: {exc}")
+
+    # Try 2: Anthropic API (if CLI failed and key is available)
+    if not grades:
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if api_key:
+            try:
+                import urllib.request
+                req_body = json.dumps({
+                    "model": "claude-sonnet-4-6",
+                    "max_tokens": 1024,
+                    "messages": [{"role": "user", "content": prompt}],
+                }).encode()
+                req = urllib.request.Request(
+                    "https://api.anthropic.com/v1/messages",
+                    data=req_body,
+                    headers={
+                        "x-api-key": api_key,
+                        "anthropic-version": "2023-06-01",
+                        "Content-Type": "application/json",
+                    },
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    body = json.loads(resp.read().decode())
+                text = "".join(b["text"] for b in body.get("content", []) if b.get("type") == "text")
+                grades = _parse_grade_json(text)
+            except Exception as exc:
+                print(f"[call-recordings] API grading failed for {rec_id}: {exc}")
+
+    if grades:
+        runtime.store.update_call_recording(rec_id, {
+            "my_performance_json": grades.get("battle_score"),
+            "seller_motivation_json": grades.get("seller_motivation"),
+            "call_score": grades.get("call_score", "Average"),
+        })
+        overall = grades.get("battle_score", {}).get("overall", "?")
+        print(f"[call-recordings] Graded {rec_id}: {grades.get('call_score', '?')} (battle: {overall}/10)")
+    else:
+        print(f"[call-recordings] Skipping grading for {rec_id} — no CLI or API key available")
+
+
+_SESSION_SPLIT_PROMPT = """You are analyzing a timestamped transcript from a real estate wholesaling dialing session. The recording contains multiple phone calls separated by silence, dial tones, or ringing.
+
+TIMESTAMPED TRANSCRIPT:
+{transcript}
+
+Split this into individual phone calls. For each call, identify:
+1. start_time: seconds offset where this call begins in the recording
+2. end_time: seconds offset where this call ends
+3. seller_name: the seller's name if mentioned (or "Unknown")
+4. property_address: the property address if mentioned (or null)
+5. disposition: one of: "answered" (talked but unclear outcome), "interested" (seller showed interest), "not_interested" (seller declined), "voicemail" (left a voicemail or got machine), "no_answer" (rang out, no pickup), "bad_number" (disconnected/wrong number)
+6. summary: 1-2 sentence summary of what happened on this call
+7. transcript: the portion of the transcript for just this call
+
+Respond with ONLY valid JSON — an array of call objects:
+[
+  {{
+    "start_time": 0,
+    "end_time": 45,
+    "seller_name": "John Smith",
+    "property_address": "123 Main St, Cleveland, OH",
+    "disposition": "not_interested",
+    "summary": "Seller said not interested in selling, owns property free and clear.",
+    "transcript": "Hello, is this John? Yes... I was calling about your property on Main Street..."
+  }}
+]
+
+Important rules:
+- Silence gaps, ringing, or dial tones between calls are NOT calls — skip them
+- If you hear "the number you have reached is not in service" or similar, that's "bad_number"
+- If it goes to voicemail/answering machine, that's "voicemail"
+- If they talk and show genuine interest or agree to a follow-up, that's "interested"
+- Be precise with start_time/end_time — use the timestamps from the transcript
+"""
+
+
+def _handle_session_upload(handler: Any, runtime: "HermesRuntime") -> dict[str, Any]:
+    """Parse multipart upload of a dialing session recording."""
+    content_type = handler.headers.get("Content-Type", "")
+    length = int(handler.headers.get("Content-Length", 0))
+    raw = handler.rfile.read(length)
+
+    boundary = ""
+    for part in content_type.split(";"):
+        part = part.strip()
+        if part.startswith("boundary="):
+            boundary = part.split("=", 1)[1].strip('"')
+            break
+
+    file_data: bytes | None = None
+    file_name: str | None = None
+    file_type: str | None = None
+    parts: dict[str, str] = {}
+
+    if boundary:
+        sep = f"--{boundary}".encode()
+        chunks = raw.split(sep)
+        for chunk in chunks:
+            if b"Content-Disposition" not in chunk:
+                continue
+            header_end = chunk.find(b"\r\n\r\n")
+            if header_end == -1:
+                continue
+            header_part = chunk[:header_end].decode("utf-8", errors="replace")
+            body_part = chunk[header_end + 4:]
+            if body_part.endswith(b"\r\n"):
+                body_part = body_part[:-2]
+
+            name = ""
+            fname = ""
+            for line in header_part.split("\r\n"):
+                if "Content-Disposition" in line:
+                    for item in line.split(";"):
+                        item = item.strip()
+                        if item.startswith("name="):
+                            name = item.split("=", 1)[1].strip('"')
+                        elif item.startswith("filename="):
+                            fname = item.split("=", 1)[1].strip('"')
+
+            if fname:
+                file_data = body_part
+                file_name = fname
+                ext = os.path.splitext(fname)[1].lower()
+                file_type = ext.lstrip(".")
+            else:
+                parts[name] = body_part.decode("utf-8", errors="replace")
+
+    if not file_data or not file_name:
+        return {"error": "No file uploaded"}
+
+    recordings_dir = runtime.store.data_dir / "recordings"
+    recordings_dir.mkdir(parents=True, exist_ok=True)
+    import uuid as _uuid
+    safe_name = f"session_{_uuid.uuid4().hex}_{file_name}"
+    file_path = str(recordings_dir / safe_name)
+    Path(file_path).write_bytes(file_data)
+
+    session_date = parts.get("session_date")
+
+    session_id = f"session-{_uuid.uuid4().hex[:8]}"
+    print(f"[session] Saved session recording: {file_path} ({len(file_data)} bytes)")
+
+    t = threading.Thread(
+        target=_process_session_recording,
+        args=(runtime, file_path, file_type or "mp4", session_id, session_date),
+        daemon=True,
+    )
+    t.start()
+
+    return {"status": "processing", "session_id": session_id, "file": file_name}
+
+
+def _process_session_recording(
+    runtime: "HermesRuntime",
+    file_path: str,
+    file_type: str,
+    session_id: str,
+    session_date: str | None,
+) -> None:
+    """Transcribe full session with timestamps, split into calls, log each one."""
+    fp = Path(file_path)
+    if not fp.is_file():
+        print(f"[session] File not found: {file_path}")
+        return
+
+    # 1) Convert to wav if needed
+    audio_path = str(fp)
+    tmp_wav = None
+    if fp.suffix.lower() in (".mov", ".mp4", ".m4a", ".webm", ".mp3", ".ogg"):
+        tmp_wav = str(fp.with_suffix(".wav"))
+        try:
+            result = subprocess.run(
+                ["ffmpeg", "-y", "-i", audio_path, "-ar", "16000", "-ac", "1",
+                 "-c:a", "pcm_s16le", tmp_wav],
+                capture_output=True, text=True, timeout=600,
+            )
+            if result.returncode == 0:
+                audio_path = tmp_wav
+            else:
+                print(f"[session] ffmpeg failed: {result.stderr[:500]}")
+        except Exception as exc:
+            print(f"[session] ffmpeg error: {exc}")
+
+    # 2) Transcribe with whisper — get timestamped segments
+    segments_text = ""
     try:
-        import urllib.request
-        req_body = json.dumps({
-            "model": "claude-sonnet-4-6",
-            "max_tokens": 1024,
-            "messages": [{"role": "user", "content": prompt}],
-        }).encode()
-        req = urllib.request.Request(
-            "https://api.anthropic.com/v1/messages",
-            data=req_body,
-            headers={
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            result = json.loads(resp.read().decode())
-
-        text = ""
-        for block in result.get("content", []):
-            if block.get("type") == "text":
-                text += block["text"]
-
-        start = text.find("{")
-        end = text.rfind("}") + 1
-        if start >= 0 and end > start:
-            grades = json.loads(text[start:end])
-            runtime.store.update_call_recording(rec_id, {
-                "my_performance_json": grades.get("my_performance"),
-                "seller_motivation_json": grades.get("seller_motivation"),
-                "call_score": grades.get("call_score", "Average"),
-            })
+        import whisper as _whisper
+        print(f"[session] Transcribing session with whisper (medium)...")
+        model = _whisper.load_model("medium")
+        result = model.transcribe(audio_path, verbose=False)
+        segments = result.get("segments", [])
+        lines = []
+        for seg in segments:
+            start = seg.get("start", 0)
+            end = seg.get("end", 0)
+            text = seg.get("text", "").strip()
+            if text:
+                lines.append(f"[{start:.1f}s - {end:.1f}s] {text}")
+        segments_text = "\n".join(lines)
+        print(f"[session] Transcription done: {len(segments)} segments, {len(segments_text)} chars")
     except Exception as exc:
-        print(f"[call-recordings] Grading failed for {rec_id}: {exc}")
+        print(f"[session] Whisper failed: {exc}")
+
+    if tmp_wav and Path(tmp_wav).exists():
+        try:
+            Path(tmp_wav).unlink()
+        except OSError:
+            pass
+
+    if not segments_text:
+        print(f"[session] No transcript — aborting session split")
+        return
+
+    # 3) Use Claude to split into individual calls
+    prompt = _SESSION_SPLIT_PROMPT.format(transcript=segments_text)
+    calls_json = None
+
+    claude_bin = shutil.which("claude")
+    if claude_bin:
+        try:
+            print(f"[session] Splitting calls via Claude CLI...")
+            result = subprocess.run(
+                [claude_bin, "-p", prompt],
+                capture_output=True, text=True, timeout=180,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                text = result.stdout.strip()
+                start = text.find("[")
+                end = text.rfind("]") + 1
+                if start >= 0 and end > start:
+                    calls_json = json.loads(text[start:end])
+        except Exception as exc:
+            print(f"[session] CLI split failed: {exc}")
+
+    if not calls_json:
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if api_key:
+            try:
+                import urllib.request
+                req_body = json.dumps({
+                    "model": "claude-sonnet-4-6",
+                    "max_tokens": 4096,
+                    "messages": [{"role": "user", "content": prompt}],
+                }).encode()
+                req = urllib.request.Request(
+                    "https://api.anthropic.com/v1/messages",
+                    data=req_body,
+                    headers={
+                        "x-api-key": api_key,
+                        "anthropic-version": "2023-06-01",
+                        "Content-Type": "application/json",
+                    },
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=120) as resp:
+                    body = json.loads(resp.read().decode())
+                text = "".join(b["text"] for b in body.get("content", []) if b.get("type") == "text")
+                start = text.find("[")
+                end = text.rfind("]") + 1
+                if start >= 0 and end > start:
+                    calls_json = json.loads(text[start:end])
+            except Exception as exc:
+                print(f"[session] API split failed: {exc}")
+
+    if not calls_json:
+        print(f"[session] Could not split transcript — creating single recording")
+        runtime.store.create_call_recording({
+            "seller_name": "Dialing Session",
+            "call_date": session_date,
+            "file_path": file_path,
+            "file_name": Path(file_path).name,
+            "file_type": file_type,
+            "transcript": segments_text,
+            "notes": f"Session {session_id} — automatic split failed, full transcript attached",
+        })
+        return
+
+    # 4) Create individual recordings and call attempts
+    print(f"[session] Found {len(calls_json)} calls in session")
+    created = 0
+    for i, call in enumerate(calls_json):
+        seller = call.get("seller_name", "Unknown")
+        addr = call.get("property_address")
+        disposition = call.get("disposition", "answered")
+        summary = call.get("summary", "")
+        call_transcript = call.get("transcript", "")
+
+        rec_result = runtime.store.create_call_recording({
+            "seller_name": seller,
+            "property_address": addr,
+            "call_date": session_date,
+            "file_path": file_path,
+            "file_name": Path(file_path).name,
+            "file_type": file_type,
+            "transcript": call_transcript,
+            "notes": f"Session {session_id} call #{i+1} — {summary}",
+        })
+        rec_id = rec_result.get("id")
+        if rec_id:
+            _auto_link_recording(runtime, rec_id)
+            rec = runtime.store.get_call_recording(rec_id)
+            lead_id = rec.get("lead_id") if rec else None
+
+            if lead_id:
+                runtime.store.log_call_attempt(lead_id, disposition, summary)
+                print(f"[session] Call #{i+1}: {seller} → {disposition}, linked to {lead_id[:40]}")
+            else:
+                print(f"[session] Call #{i+1}: {seller} → {disposition}, no lead match")
+
+            if call_transcript:
+                _grade_recording(runtime, rec_id, call_transcript)
+
+        created += 1
+
+    print(f"[session] Session {session_id} complete: {created} calls processed")
 
 
 # Content types for static files
@@ -452,6 +818,10 @@ class HermesRuntime:
             self.static_dir = candidate.resolve() if candidate.is_dir() else None
         self._register_source_adapters()
 
+        from .agents import AgentOrchestrator
+        self.orchestrator = AgentOrchestrator(self.store, self)
+        self.orchestrator.start_scheduler()
+
     def _register_source_adapters(self) -> None:
         try:
             from lead_engine.sources import list_sources, get_adapter
@@ -475,8 +845,70 @@ class HermesRuntime:
             "PARTIAL",
         )
 
+        self.store.upsert_source_adapter(
+            "zillow_fsbo",
+            "Zillow FSBO (For Sale By Owner)",
+            "PARTIAL",
+        )
+
     def create_server(self, host: str = "127.0.0.1", port: int = 8765) -> ThreadingHTTPServer:
         runtime = self
+
+        def _execute_runtime_action(rt: 'HermesRuntime', payload: dict) -> None:
+            action = payload.get("action", "")
+            if action == "run_skip_trace":
+                def _bg():
+                    try:
+                        _run_skip_trace_pipeline(rt)
+                    except Exception:
+                        pass
+                threading.Thread(target=_bg, daemon=True).start()
+            elif action == "run_underwriting":
+                lead_id = payload.get("lead_id")
+                if lead_id:
+                    def _bg():
+                        try:
+                            _run_underwriting_bg(rt, lead_id)
+                        except Exception:
+                            pass
+                    threading.Thread(target=_bg, daemon=True).start()
+            elif action == "run_evaluation":
+                def _bg():
+                    try:
+                        _start_evaluation(rt)
+                    except Exception:
+                        pass
+                threading.Thread(target=_bg, daemon=True).start()
+            elif action == "run_scrape":
+                source = payload.get("source", "code_violations")
+                if source == "code_violations":
+                    def _bg():
+                        try:
+                            _trigger_scrape_and_ingest(rt)
+                        except Exception:
+                            pass
+                    threading.Thread(target=_bg, daemon=True).start()
+            elif action == "run_verification":
+                def _bg():
+                    try:
+                        _run_batch_verification(rt, f"agent-verify-{uuid.uuid4().hex[:8]}")
+                    except Exception:
+                        pass
+                threading.Thread(target=_bg, daemon=True).start()
+            elif action == "grade_recording":
+                rec_id = payload.get("recording_id")
+                if rec_id:
+                    rec = rt.store.get_call_recording(int(rec_id))
+                    if rec and rec.get("transcript"):
+                        def _bg():
+                            _grade_recording(rt, int(rec_id), rec["transcript"])
+                        threading.Thread(target=_bg, daemon=True).start()
+            elif action == "transcribe_recording":
+                rec_id = payload.get("recording_id")
+                if rec_id:
+                    def _bg():
+                        _transcribe_and_grade(rt, int(rec_id))
+                    threading.Thread(target=_bg, daemon=True).start()
 
         class Handler(BaseHTTPRequestHandler):
             server_version = "HermesRuntime/0.1"
@@ -552,6 +984,12 @@ class HermesRuntime:
                     self._send_json(HTTPStatus.OK, data)
                     return
 
+                m = re.match(r"^/api/leads/([^/]+)/calls$", path)
+                if m:
+                    history = runtime.store.get_call_history(m.group(1))
+                    self._send_json(HTTPStatus.OK, history)
+                    return
+
                 m = re.match(r"^/api/leads/([^/]+)$", path)
                 if m:
                     lead = runtime.store.get_lead_detail(m.group(1))
@@ -577,6 +1015,13 @@ class HermesRuntime:
 
                 if path == "/api/sources":
                     self._send_json(HTTPStatus.OK, runtime.store.list_source_adapters())
+                    return
+
+                if path == "/api/sources/zillow_fsbo/status":
+                    status = getattr(runtime, '_zillow_fsbo_status', {
+                        "running": False, "log": [], "markets": [],
+                    })
+                    self._send_json(HTTPStatus.OK, status)
                     return
 
                 if path == "/api/quota":
@@ -825,6 +1270,11 @@ class HermesRuntime:
                     self._send_json(HTTPStatus.OK, runtime.store.get_conversion_funnel(days))
                     return
 
+                if path == "/api/kpi/dial-check":
+                    minutes = int(self._query_first(query, "minutes", "15"))
+                    self._send_json(HTTPStatus.OK, runtime.store.get_dial_check(minutes))
+                    return
+
                 if path == "/api/kpi/calls":
                     days = int(self._query_first(query, "days", "7"))
                     self._send_json(HTTPStatus.OK, runtime.store.get_call_metrics(days))
@@ -837,6 +1287,10 @@ class HermesRuntime:
 
                 if path == "/api/kpi/source-roi":
                     self._send_json(HTTPStatus.OK, runtime.store.get_source_roi())
+                    return
+
+                if path == "/api/kpi/tracker":
+                    self._send_json(HTTPStatus.OK, runtime.store.get_tracker_kpis())
                     return
 
                 # ── Call Recordings (GET) ────────────────────────
@@ -855,6 +1309,16 @@ class HermesRuntime:
 
                 if path == "/api/call-recordings/stats":
                     self._send_json(HTTPStatus.OK, runtime.store.call_recording_stats())
+                    return
+
+                m = re.match(r"^/api/call-recordings/by-lead/(.+)$", path)
+                if m:
+                    lid = unquote(m.group(1))
+                    with runtime.store._connect() as conn:
+                        rows = conn.execute(
+                            "SELECT * FROM call_recordings WHERE lead_id = ? ORDER BY call_date DESC", (lid,)
+                        ).fetchall()
+                    self._send_json(HTTPStatus.OK, [dict(r) for r in rows])
                     return
 
                 m = re.match(r"^/api/call-recordings/(\d+)$", path)
@@ -877,13 +1341,94 @@ class HermesRuntime:
                         self._send_json(HTTPStatus.NOT_FOUND, {"error": "File missing"})
                         return
                     ct = mimetypes.guess_type(str(fp))[0] or "application/octet-stream"
-                    body = fp.read_bytes()
+                    file_size = fp.stat().st_size
+                    range_header = self.headers.get("Range")
+                    if range_header:
+                        range_match = re.match(r"bytes=(\d+)-(\d*)", range_header)
+                        if range_match:
+                            start = int(range_match.group(1))
+                            end = int(range_match.group(2)) if range_match.group(2) else file_size - 1
+                            end = min(end, file_size - 1)
+                            length = end - start + 1
+                            self.send_response(206)
+                            self.send_header("Content-Type", ct)
+                            self.send_header("Content-Length", str(length))
+                            self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
+                            self.send_header("Accept-Ranges", "bytes")
+                            self._cors_headers()
+                            self.end_headers()
+                            with open(fp, "rb") as f:
+                                f.seek(start)
+                                self.wfile.write(f.read(length))
+                            return
                     self.send_response(HTTPStatus.OK)
                     self.send_header("Content-Type", ct)
-                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Content-Length", str(file_size))
+                    self.send_header("Accept-Ranges", "bytes")
                     self._cors_headers()
                     self.end_headers()
-                    self.wfile.write(body)
+                    with open(fp, "rb") as f:
+                        while True:
+                            chunk = f.read(65536)
+                            if not chunk:
+                                break
+                            self.wfile.write(chunk)
+                    return
+
+                # ── Agents (GET) ──────────────────────────────────
+                if path == "/api/agents":
+                    self._send_json(HTTPStatus.OK, runtime.store.list_agent_definitions())
+                    return
+
+                if path == "/api/agents/proposals/pending/count":
+                    self._send_json(HTTPStatus.OK, {"count": runtime.store.pending_proposal_count()})
+                    return
+
+                if path == "/api/agents/proposals":
+                    data = runtime.store.list_proposals(
+                        status=self._query_first(query, "status"),
+                        agent_type=self._query_first(query, "agent_type"),
+                        limit=int(self._query_first(query, "limit", "50")),
+                    )
+                    self._send_json(HTTPStatus.OK, data)
+                    return
+
+                m = re.match(r"^/api/agents/proposals/(\d+)$", path)
+                if m:
+                    proposal = runtime.store.get_proposal(int(m.group(1)))
+                    if proposal:
+                        self._send_json(HTTPStatus.OK, proposal)
+                    else:
+                        self._send_json(HTTPStatus.NOT_FOUND, {"error": "Proposal not found"})
+                    return
+
+                if path == "/api/agents/proxy-status":
+                    self._send_json(HTTPStatus.OK, runtime.orchestrator.get_status())
+                    return
+
+                m = re.match(r"^/api/agents/([a-z_]+)/runs$", path)
+                if m:
+                    self._send_json(HTTPStatus.OK,
+                                    runtime.store.list_agent_runs(m.group(1)))
+                    return
+
+                m = re.match(r"^/api/agents/([a-z_]+)/runs/([a-z0-9-]+)$", path)
+                if m:
+                    run = runtime.store.get_agent_run(m.group(2))
+                    if run:
+                        self._send_json(HTTPStatus.OK, run)
+                    else:
+                        self._send_json(HTTPStatus.NOT_FOUND, {"error": "Run not found"})
+                    return
+
+                m = re.match(r"^/api/agents/([a-z_]+)$", path)
+                if m:
+                    defn = runtime.store.get_agent_definition(m.group(1))
+                    if defn:
+                        defn["running"] = runtime.orchestrator.is_running(m.group(1))
+                        self._send_json(HTTPStatus.OK, defn)
+                    else:
+                        self._send_json(HTTPStatus.NOT_FOUND, {"error": "Agent not found"})
                     return
 
                 # ── Static file serving (dashboard SPA) ───────────
@@ -1009,6 +1554,25 @@ class HermesRuntime:
                     self._send_json(HTTPStatus.OK, result)
                     return
 
+                m = re.match(r"^/api/leads/([^/]+)/calls$", path)
+                if m:
+                    body = self._read_json()
+                    result = runtime.store.log_call_attempt(
+                        m.group(1),
+                        body.get("disposition", "unknown"),
+                        body.get("notes"),
+                        body.get("phone_number"),
+                    )
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                if path == "/api/queue/requeue-stale":
+                    body = self._read_json()
+                    days = body.get("days_threshold", 10)
+                    result = runtime.store.requeue_stale_leads(days_threshold=days)
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
                 if path == "/api/pipeline/run":
                     result = _trigger_pipeline(runtime.root)
                     self._send_json(HTTPStatus.OK, result)
@@ -1073,6 +1637,46 @@ class HermesRuntime:
                 if path == "/api/sources/code_violations/qualify":
                     result = _qualify_code_violation_leads(runtime)
                     self._send_json(HTTPStatus.OK, result)
+                    return
+
+                if path == "/api/sources/zillow_fsbo/scrape":
+                    body = self._read_json()
+                    markets = body.get("markets")
+                    max_pages = body.get("max_pages", 3)
+
+                    # Track status for the dashboard
+                    runtime._zillow_fsbo_status = {
+                        "running": True, "log": [], "markets": markets or ["cleveland-oh"],
+                        "started_at": __import__('datetime').datetime.now().isoformat(),
+                    }
+
+                    def _log(msg: str) -> None:
+                        print(msg)
+                        if hasattr(runtime, '_zillow_fsbo_status'):
+                            runtime._zillow_fsbo_status["log"].append(msg)
+
+                    def _bg() -> None:
+                        try:
+                            from .zillow_fsbo import scrape_zillow_fsbo, ingest_fsbo_listings
+                            listings = scrape_zillow_fsbo(
+                                markets=markets,
+                                max_pages=max_pages,
+                                headless=False,
+                                log_fn=_log,
+                            )
+                            result = ingest_fsbo_listings(runtime.store, listings, log_fn=_log)
+                            runtime._zillow_fsbo_status["result"] = result
+                        except Exception as exc:
+                            _log(f"[zillow-fsbo] FATAL: {exc}")
+                            runtime._zillow_fsbo_status["error"] = str(exc)
+                        finally:
+                            runtime._zillow_fsbo_status["running"] = False
+
+                    threading.Thread(target=_bg, daemon=True).start()
+                    self._send_json(HTTPStatus.OK, {
+                        "status": "started",
+                        "markets": markets or ["cleveland-oh"],
+                    })
                     return
 
                 if path == "/api/follow-ups":
@@ -1433,6 +2037,11 @@ class HermesRuntime:
 
                 # ── Call Recordings (POST) ───────────────────────
 
+                if path == "/api/recordings/session":
+                    result = _handle_session_upload(self, runtime)
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
                 if path == "/api/call-recordings":
                     content_type = self.headers.get("Content-Type", "")
                     if "multipart/form-data" in content_type:
@@ -1481,6 +2090,145 @@ class HermesRuntime:
                         _grade_recording(runtime, rec_id, rec["transcript"])
                     threading.Thread(target=_bg_grade, daemon=True).start()
                     self._send_json(HTTPStatus.OK, {"status": "started", "id": rec_id})
+                    return
+
+                m = re.match(r"^/api/call-recordings/(\d+)/auto-link$", path)
+                if m:
+                    rec_id = int(m.group(1))
+                    rec = runtime.store.get_call_recording(rec_id)
+                    if not rec:
+                        self._send_json(HTTPStatus.NOT_FOUND, {"error": "Recording not found"})
+                        return
+                    name = rec.get("seller_name", "")
+                    addr = rec.get("property_address", "")
+                    with runtime.store._connect() as conn:
+                        name_clauses = []
+                        name_params = []
+                        for part in name.lower().split():
+                            if len(part) > 2:
+                                name_clauses.append("lower(o.owner_name) LIKE ?")
+                                name_params.append(f"%{part}%")
+                        addr_clauses = []
+                        addr_params = []
+                        if addr:
+                            street_part = addr.split(",")[0].strip()
+                            for word in street_part.lower().split():
+                                if len(word) > 2 and word not in ("ave", "avenue", "st", "street", "rd", "road", "dr", "drive", "blvd", "ct", "ln", "pl", "way", "circle", "court", "lane", "place"):
+                                    addr_clauses.append("lower(p.address_street) LIKE ?")
+                                    addr_params.append(f"%{word}%")
+                        if not name_clauses and not addr_clauses:
+                            self._send_json(HTTPStatus.OK, {"status": "no_match", "matches": []})
+                            return
+                        if name_clauses and addr_clauses:
+                            where = f"({' AND '.join(name_clauses)}) AND ({' AND '.join(addr_clauses)})"
+                            params = name_params + addr_params
+                        elif name_clauses:
+                            where = " AND ".join(name_clauses)
+                            params = name_params
+                        else:
+                            where = " AND ".join(addr_clauses)
+                            params = addr_params
+                        rows = conn.execute(
+                            f"""SELECT l.lead_id, o.owner_name, p.address_street, p.address_city,
+                                       p.address_state, l.status
+                                FROM leads l
+                                JOIN owners o ON l.owner_id = o.owner_id
+                                JOIN properties p ON l.property_id = p.property_id
+                                WHERE {where} LIMIT 5""",
+                            params,
+                        ).fetchall()
+                    matches = [dict(r) for r in rows]
+                    if len(matches) == 1:
+                        runtime.store.update_call_recording(rec_id, {"lead_id": matches[0]["lead_id"]})
+                        self._send_json(HTTPStatus.OK, {"status": "linked", "lead_id": matches[0]["lead_id"], "matches": matches})
+                    else:
+                        self._send_json(HTTPStatus.OK, {"status": "multiple" if matches else "no_match", "matches": matches})
+                    return
+
+                # ── Agents (POST) ─────────────────────────────────
+                m = re.match(r"^/api/agents/([a-z_]+)/run$", path)
+                if m:
+                    result = runtime.orchestrator.run_agent(m.group(1))
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                m = re.match(r"^/api/agents/([a-z_]+)/stop$", path)
+                if m:
+                    result = runtime.orchestrator.stop_agent(m.group(1))
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                m = re.match(r"^/api/agents/([a-z_]+)/toggle$", path)
+                if m:
+                    payload = self._read_json()
+                    result = runtime.store.update_agent_config(
+                        m.group(1), enabled=payload.get("enabled", True)
+                    )
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                m = re.match(r"^/api/agents/([a-z_]+)/config$", path)
+                if m:
+                    payload = self._read_json()
+                    result = runtime.store.update_agent_config(
+                        m.group(1),
+                        schedule=payload.get("schedule"),
+                        enabled=payload.get("enabled"),
+                        config_json=json.dumps(payload.get("config")) if "config" in payload else None,
+                        prompt_template=payload.get("prompt_template"),
+                    )
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                m = re.match(r"^/api/agents/proposals/(\d+)/approve$", path)
+                if m:
+                    pid = int(m.group(1))
+                    runtime.store.resolve_proposal(pid, "approved")
+                    result = runtime.store.execute_proposal_payload(pid)
+                    proposal = runtime.store.get_proposal(pid)
+                    if proposal:
+                        pl = json.loads(proposal.get("payload_json", "{}"))
+                        _execute_runtime_action(runtime, pl)
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                m = re.match(r"^/api/agents/proposals/(\d+)/deny$", path)
+                if m:
+                    pid = int(m.group(1))
+                    payload = self._read_json()
+                    result = runtime.store.resolve_proposal(
+                        pid, "denied", notes=payload.get("reason")
+                    )
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                m = re.match(r"^/api/agents/proposals/(\d+)/revise$", path)
+                if m:
+                    pid = int(m.group(1))
+                    payload = self._read_json()
+                    result = runtime.store.resolve_proposal(
+                        pid, "revised", notes=payload.get("notes", "")
+                    )
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                if path == "/api/agents/proposals/bulk-approve":
+                    payload = self._read_json()
+                    ids = payload.get("ids", [])
+                    results = []
+                    for pid in ids:
+                        runtime.store.resolve_proposal(pid, "approved")
+                        results.append(runtime.store.execute_proposal_payload(pid))
+                    self._send_json(HTTPStatus.OK, {"approved": len(ids), "results": results})
+                    return
+
+                if path == "/api/agents/proposals/bulk-deny":
+                    payload = self._read_json()
+                    ids = payload.get("ids", [])
+                    reason = payload.get("reason")
+                    for pid in ids:
+                        runtime.store.resolve_proposal(pid, "denied", notes=reason)
+                    self._send_json(HTTPStatus.OK, {"denied": len(ids)})
                     return
 
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})

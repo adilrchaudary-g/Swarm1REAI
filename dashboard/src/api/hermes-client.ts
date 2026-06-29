@@ -1,4 +1,4 @@
-import type { Lead, PhoneRecord, PipelineStats, SourceAdapter, KpiSummary, FollowUp, MarketInfo, SocialComment, SocialCampaign, SocialBanditStats, FoiaRequest, WaterShutoffRecord, WaterShutoffStats, FsboListing, FsboMarket, FsboStats, FsboScrapeStatus, CourtRecordCounty, CourtRecordCase, CourtRecordStats, CourtRecordScrapeStatus, CountyScouting, CountyScoutingStats, ScoutPipelineStatus, DistressedProperty, CallRecording, CallRecordingStats, UnderwritingReport, EvaluationStatus, ConversionFunnel, CallMetrics, DailyActivity, SourceRoi } from './types'
+import type { Lead, PhoneRecord, PipelineStats, SourceAdapter, KpiSummary, FollowUp, MarketInfo, SocialComment, SocialCampaign, SocialBanditStats, FoiaRequest, WaterShutoffRecord, WaterShutoffStats, FsboListing, FsboMarket, FsboStats, FsboScrapeStatus, CourtRecordCounty, CourtRecordCase, CourtRecordStats, CourtRecordScrapeStatus, CountyScouting, CountyScoutingStats, ScoutPipelineStatus, DistressedProperty, CallRecording, CallRecordingStats, UnderwritingReport, EvaluationStatus, ConversionFunnel, CallMetrics, DailyActivity, SourceRoi, TrackerKpis, AgentDefinition, AgentRun, Proposal, AgentProxyStatus } from './types'
 
 const BASE = '/api'
 
@@ -69,6 +69,10 @@ export const hermesClient = {
       post<{ status: string; lead_id: string }>(`/leads/${id}/status`, { status: 'archived', reason: reason || 'Bad number' }),
     bulkUpdateStatus: (leadIds: string[], status: string, reason?: string) =>
       post<{ status: string; updated: number; errors?: string[] }>('/leads/bulk-status', { lead_ids: leadIds, status, reason }),
+    logCall: (id: string, disposition: string, notes?: string, phone_number?: string) =>
+      post<{ status: string; disposition: string; called_at: string; phone_number?: string }>(`/leads/${id}/calls`, { disposition, notes, phone_number }),
+    callHistory: (id: string) =>
+      get<Array<{ id: number; lead_id: string; disposition: string; notes: string | null; called_at: string; phone_number: string | null }>>(`/leads/${id}/calls`),
   },
 
   pipeline: {
@@ -92,6 +96,10 @@ export const hermesClient = {
     list: () => get<SourceAdapter[]>('/sources'),
     run: (sourceId: string, params?: Record<string, unknown>) =>
       post<{ status: string }>(`/sources/${sourceId}/run`, params),
+    scrapeZillowFsbo: (params?: { markets?: string[]; max_pages?: number }) =>
+      post<{ status: string; markets: string[] }>('/sources/zillow_fsbo/scrape', params),
+    zillowFsboStatus: () =>
+      get<{ running: boolean; log: string[]; markets: string[]; result?: any; error?: string }>('/sources/zillow_fsbo/status'),
     scrapeCodeViolations: (params?: { portal_ids?: string[]; days_back?: number; limit?: number }) =>
       post<{ status: string; portals_scraped: number; total_leads: number; details: any[] }>(
         '/sources/code_violations/scrape', params,
@@ -142,6 +150,7 @@ export const hermesClient = {
     calls: (days = 7) => get<CallMetrics>(`/kpi/calls?days=${days}`),
     daily: (days = 30) => get<DailyActivity[]>(`/kpi/daily?days=${days}`),
     sourceRoi: () => get<SourceRoi[]>('/kpi/source-roi'),
+    tracker: () => get<TrackerKpis>('/kpi/tracker'),
   },
 
   markets: {
@@ -373,5 +382,49 @@ export const hermesClient = {
     grade: (id: number) =>
       post<{ status: string; id: number }>(`/call-recordings/${id}/grade`),
     audioUrl: (id: number) => `${BASE}/call-recordings/${id}/audio`,
+    byLead: (leadId: string) =>
+      get<CallRecording[]>(`/call-recordings/by-lead/${encodeURIComponent(leadId)}`),
+    autoLink: (id: number) =>
+      post<{ status: string; lead_id?: string; matches: Array<{ lead_id: string; owner_name: string; address_street: string; address_city: string; address_state: string; status: string }> }>(`/call-recordings/${id}/auto-link`),
+    uploadSession: async (formData: FormData) => {
+      const res = await fetch(`${BASE}/recordings/session`, { method: 'POST', body: formData })
+      if (!res.ok) throw new Error(`POST /recordings/session: ${res.status}`)
+      return res.json() as Promise<{ status: string; session_id: string; file: string }>
+    },
+  },
+
+  agents: {
+    list: () => get<AgentDefinition[]>('/agents'),
+    get: (type: string) => get<AgentDefinition>(`/agents/${type}`),
+    run: (type: string) => post<{ run_id: string; status: string }>(`/agents/${type}/run`),
+    stop: (type: string) => post<{ status: string }>(`/agents/${type}/stop`),
+    toggle: (type: string, enabled: boolean) =>
+      post<{ updated: boolean }>(`/agents/${type}/toggle`, { enabled }),
+    config: (type: string, cfg: Record<string, unknown>) =>
+      post<{ updated: boolean }>(`/agents/${type}/config`, cfg),
+    runs: (type: string) => get<AgentRun[]>(`/agents/${type}/runs`),
+    run_detail: (type: string, runId: string) => get<AgentRun>(`/agents/${type}/runs/${runId}`),
+    proxyStatus: () => get<AgentProxyStatus>('/agents/proxy-status'),
+    proposals: {
+      list: (params?: { status?: string; agent_type?: string; limit?: number }) => {
+        const qs = new URLSearchParams()
+        if (params?.status) qs.set('status', params.status)
+        if (params?.agent_type) qs.set('agent_type', params.agent_type)
+        if (params?.limit) qs.set('limit', String(params.limit))
+        const q = qs.toString()
+        return get<Proposal[]>(`/agents/proposals${q ? `?${q}` : ''}`)
+      },
+      get: (id: number) => get<Proposal>(`/agents/proposals/${id}`),
+      pendingCount: () => get<{ count: number }>('/agents/proposals/pending/count'),
+      approve: (id: number) => post<{ executed: boolean }>(`/agents/proposals/${id}/approve`),
+      deny: (id: number, reason?: string) =>
+        post<{ id: number; status: string }>(`/agents/proposals/${id}/deny`, { reason }),
+      revise: (id: number, notes: string) =>
+        post<{ id: number; status: string }>(`/agents/proposals/${id}/revise`, { notes }),
+      bulkApprove: (ids: number[]) =>
+        post<{ approved: number }>('/agents/proposals/bulk-approve', { ids }),
+      bulkDeny: (ids: number[], reason?: string) =>
+        post<{ denied: number }>('/agents/proposals/bulk-deny', { ids, reason }),
+    },
   },
 }

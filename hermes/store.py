@@ -498,6 +498,69 @@ class HermesStore:
             result["errors"] = errors
         return result
 
+    def log_call_attempt(
+        self, lead_id: str, disposition: str, notes: str | None = None, phone_number: str | None = None
+    ) -> dict[str, Any]:
+        called_at = now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO call_attempts (lead_id, disposition, notes, called_at, phone_number) VALUES (?, ?, ?, ?, ?)",
+                (lead_id, disposition, notes, called_at, phone_number),
+            )
+            return {"status": "ok", "lead_id": lead_id, "disposition": disposition, "called_at": called_at, "phone_number": phone_number}
+
+    def requeue_stale_leads(self, days_threshold: int = 10) -> dict[str, Any]:
+        """Re-queue leads whose last call attempt was more than `days_threshold` days ago.
+
+        Targets leads in 'contacted' or 'enriched' status that have cell phones,
+        were previously called (no_answer/voicemail), and haven't been called recently.
+        """
+        self.initialize()
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days_threshold)).isoformat()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT ca.lead_id
+                FROM call_attempts ca
+                JOIN leads l ON l.lead_id = ca.lead_id
+                WHERE ca.disposition IN ('no_answer', 'voicemail')
+                  AND l.status IN ('contacted', 'enriched')
+                  AND EXISTS (
+                    SELECT 1 FROM owner_phones op
+                    WHERE op.owner_id = l.owner_id
+                      AND LOWER(op.phone_type) IN ('cell', 'mobile')
+                  )
+                  AND ca.lead_id NOT IN (
+                    SELECT lead_id FROM call_attempts
+                    WHERE called_at >= ?
+                  )
+                """,
+                (cutoff,),
+            ).fetchall()
+            lead_ids = [r["lead_id"] for r in rows]
+            if not lead_ids:
+                return {"status": "ok", "requeued": 0}
+            placeholders = ",".join("?" * len(lead_ids))
+            conn.execute(
+                f"UPDATE leads SET status = 'queued', updated_at = ? WHERE lead_id IN ({placeholders})",
+                [now_iso()] + lead_ids,
+            )
+            for lid in lead_ids:
+                conn.execute(
+                    "INSERT INTO lead_status_history (lead_id, from_status, to_status, reason, created_at) "
+                    "VALUES (?, 'contacted', 'queued', ?, ?)",
+                    (lid, f"Auto re-queued: no contact in {days_threshold} days", now_iso()),
+                )
+            return {"status": "ok", "requeued": len(lead_ids)}
+
+    def get_call_history(self, lead_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM call_attempts WHERE lead_id = ? ORDER BY called_at DESC",
+                (lead_id,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
     def add_lead_note(
         self, lead_id: str, note_type: str, content: str
     ) -> dict[str, Any]:
@@ -997,6 +1060,32 @@ class HermesStore:
                 "days_back": days_back,
             }
 
+    def get_dial_check(self, minutes_back: int = 15) -> dict[str, Any]:
+        self.initialize()
+        now = datetime.now(timezone.utc)
+        cutoff = (now - timedelta(minutes=minutes_back)).isoformat()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        today_date = now.strftime("%Y-%m-%d")
+        with self._connect() as conn:
+            recent_dials = conn.execute(
+                "SELECT COUNT(*) as cnt FROM call_attempts WHERE called_at >= ?",
+                (cutoff,),
+            ).fetchone()["cnt"]
+            today_dials = conn.execute(
+                "SELECT COUNT(*) as cnt FROM call_attempts WHERE called_at >= ?",
+                (today_start,),
+            ).fetchone()["cnt"]
+            today_recordings = conn.execute(
+                "SELECT COUNT(*) as cnt FROM call_recordings WHERE call_date >= ?",
+                (today_date,),
+            ).fetchone()["cnt"]
+            return {
+                "recent_dials": recent_dials,
+                "recent_minutes": minutes_back,
+                "today_dials": today_dials,
+                "today_recordings": today_recordings,
+            }
+
     def get_daily_activity(self, days_back: int = 30) -> list[dict[str, Any]]:
         self.initialize()
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days_back)).isoformat()
@@ -1012,6 +1101,68 @@ class HermesStore:
                 (cutoff,),
             ).fetchall()
             return [dict(r) for r in rows]
+
+    def get_tracker_kpis(self) -> dict[str, Any]:
+        self.initialize()
+        now = datetime.now(timezone.utc)
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        week_start = (now - timedelta(days=now.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        ).isoformat()
+        with self._connect() as conn:
+            calls_today = conn.execute(
+                "SELECT COUNT(*) as cnt FROM call_attempts WHERE called_at >= ?",
+                (today_start,),
+            ).fetchone()["cnt"]
+            status_calls_today = conn.execute(
+                "SELECT COUNT(*) as cnt FROM lead_status_history "
+                "WHERE to_status IN ('contacted', 'interested', 'not_interested') "
+                "AND created_at >= ?",
+                (today_start,),
+            ).fetchone()["cnt"]
+            total_calls_today = max(calls_today, status_calls_today)
+
+            convos_from_attempts = conn.execute(
+                "SELECT COUNT(*) as cnt FROM call_attempts "
+                "WHERE disposition NOT IN ('no_answer', 'voicemail', 'busy', 'disconnected', 'wrong_number') "
+                "AND called_at >= ?",
+                (today_start,),
+            ).fetchone()["cnt"]
+            convos_from_status = conn.execute(
+                "SELECT COUNT(DISTINCT lead_id) as cnt FROM lead_status_history "
+                "WHERE to_status IN ('contacted', 'interested', 'not_interested') "
+                "AND (reason IS NULL OR reason NOT LIKE '%voicemail%') "
+                "AND created_at >= ?",
+                (today_start,),
+            ).fetchone()["cnt"]
+            real_convos_today = max(convos_from_attempts, convos_from_status)
+
+            real_leads_week = conn.execute(
+                "SELECT COUNT(DISTINCT lead_id) as cnt FROM lead_status_history "
+                "WHERE to_status = 'interested' AND created_at >= ?",
+                (week_start,),
+            ).fetchone()["cnt"]
+
+            daily_rows = conn.execute(
+                "SELECT DATE(created_at) as day, "
+                "COUNT(*) as calls, "
+                "SUM(CASE WHEN to_status IN ('contacted', 'interested', 'not_interested') "
+                "AND (reason IS NULL OR reason NOT LIKE '%%voicemail%%') THEN 1 ELSE 0 END) as convos, "
+                "SUM(CASE WHEN to_status = 'interested' THEN 1 ELSE 0 END) as leads "
+                "FROM lead_status_history "
+                "WHERE to_status IN ('contacted', 'interested', 'not_interested') "
+                "AND created_at >= ? "
+                "GROUP BY DATE(created_at) ORDER BY day",
+                ((now - timedelta(days=14)).isoformat(),),
+            ).fetchall()
+            history = [dict(r) for r in daily_rows]
+
+            return {
+                "calls_today": total_calls_today,
+                "real_convos_today": real_convos_today,
+                "real_leads_week": real_leads_week,
+                "history": history,
+            }
 
     def get_source_roi(self) -> list[dict[str, Any]]:
         self.initialize()
@@ -1407,6 +1558,16 @@ class HermesStore:
               FOREIGN KEY (lead_id) REFERENCES leads(lead_id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS call_attempts (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              lead_id TEXT NOT NULL,
+              disposition TEXT NOT NULL,
+              notes TEXT,
+              called_at TEXT NOT NULL,
+              phone_number TEXT,
+              FOREIGN KEY (lead_id) REFERENCES leads(lead_id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS follow_ups (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               lead_id TEXT NOT NULL,
@@ -1571,6 +1732,13 @@ class HermesStore:
         )
         self._migrate_propstream_verified(conn)
         self._migrate_evaluation_and_underwriting(conn)
+        self._migrate_agent_system(conn)
+        self._migrate_call_attempts_phone(conn)
+
+    def _migrate_call_attempts_phone(self, conn: sqlite3.Connection) -> None:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(call_attempts)").fetchall()}
+        if "phone_number" not in cols:
+            conn.execute("ALTER TABLE call_attempts ADD COLUMN phone_number TEXT")
 
     def _migrate_evaluation_and_underwriting(self, conn: sqlite3.Connection) -> None:
         lead_cols = {row[1] for row in conn.execute("PRAGMA table_info(leads)").fetchall()}
@@ -1655,6 +1823,403 @@ class HermesStore:
             WHERE COALESCE(motivation_tier, '') = 'hot'
                OR COALESCE(motivation_score, 0) >= 80;
         """)
+
+    def _migrate_agent_system(self, conn: sqlite3.Connection) -> None:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS agent_definitions (
+              agent_type TEXT PRIMARY KEY,
+              display_name TEXT NOT NULL,
+              description TEXT,
+              prompt_template TEXT,
+              schedule TEXT DEFAULT 'every 4h',
+              enabled INTEGER DEFAULT 1,
+              config_json TEXT DEFAULT '{}',
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS agent_runs (
+              run_id TEXT PRIMARY KEY,
+              agent_type TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'running',
+              phase TEXT DEFAULT 'starting',
+              started_at TEXT NOT NULL,
+              completed_at TEXT,
+              leads_scanned INTEGER DEFAULT 0,
+              proposals_created INTEGER DEFAULT 0,
+              ai_calls_made INTEGER DEFAULT 0,
+              ai_available INTEGER DEFAULT 1,
+              log_lines_json TEXT DEFAULT '[]',
+              error TEXT,
+              result_json TEXT
+            );
+            CREATE TABLE IF NOT EXISTS proposals (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              agent_type TEXT NOT NULL,
+              run_id TEXT NOT NULL,
+              title TEXT NOT NULL,
+              description TEXT,
+              payload_json TEXT NOT NULL,
+              priority TEXT DEFAULT 'medium',
+              status TEXT NOT NULL DEFAULT 'pending',
+              revision_notes TEXT,
+              resolved_at TEXT,
+              created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_proposals_status ON proposals(status);
+            CREATE INDEX IF NOT EXISTS idx_proposals_agent ON proposals(agent_type);
+            CREATE INDEX IF NOT EXISTS idx_proposals_created ON proposals(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_agent_runs_type ON agent_runs(agent_type);
+            CREATE INDEX IF NOT EXISTS idx_agent_runs_status ON agent_runs(status);
+        """)
+        self._seed_agent_definitions(conn)
+
+    def _seed_agent_definitions(self, conn: sqlite3.Connection) -> None:
+        ts = now_iso()
+        old_agents = ("lead_reviewer", "comp_analyst", "pipeline_janitor", "meta_reviewer")
+        for old in old_agents:
+            conn.execute("DELETE FROM agent_definitions WHERE agent_type = ?", (old,))
+
+        agents = [
+            ("scout", "Scout",
+             "Acquisition & lead generation — skip-traces untraced leads, triggers source scrapes, ingests pending records, detects signal stacking",
+             "every 2h"),
+            ("dispatcher", "Dispatcher",
+             "Call queue & outreach — prioritizes dial list, manages follow-ups, grades calls, generates daily call briefs",
+             "every 3h"),
+            ("analyst", "Analyst",
+             "Deal analysis & underwriting — runs comps, calculates offers, flags bad deals, checks offer readiness",
+             "every 4h"),
+            ("operator", "Operator",
+             "CRM hygiene & data ops — deduplicates leads, fixes stuck statuses, cleans uncontactable leads, audits source quality",
+             "every 6h"),
+            ("supervisor", "Supervisor",
+             "Oversight & reporting — reviews all agents, consolidates noise, detects systemic issues, delivers daily ops digest",
+             "every 4h"),
+        ]
+        for agent_type, name, desc, schedule in agents:
+            conn.execute(
+                """INSERT OR IGNORE INTO agent_definitions
+                   (agent_type, display_name, description, schedule, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (agent_type, name, desc, schedule, ts, ts),
+            )
+
+    # ── Agent CRUD ──────────────────────────────────────────────────
+
+    def list_agent_definitions(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT d.*,
+                   (SELECT run_id FROM agent_runs WHERE agent_type = d.agent_type
+                    ORDER BY started_at DESC LIMIT 1) AS last_run_id,
+                   (SELECT status FROM agent_runs WHERE agent_type = d.agent_type
+                    ORDER BY started_at DESC LIMIT 1) AS last_run_status,
+                   (SELECT started_at FROM agent_runs WHERE agent_type = d.agent_type
+                    ORDER BY started_at DESC LIMIT 1) AS last_run_at
+                FROM agent_definitions d ORDER BY d.agent_type"""
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_agent_definition(self, agent_type: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM agent_definitions WHERE agent_type = ?", (agent_type,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def update_agent_config(self, agent_type: str, *,
+                            schedule: str | None = None,
+                            enabled: bool | None = None,
+                            config_json: str | None = None,
+                            prompt_template: str | None = None) -> dict[str, Any]:
+        updates, params = [], []
+        if schedule is not None:
+            updates.append("schedule = ?"); params.append(schedule)
+        if enabled is not None:
+            updates.append("enabled = ?"); params.append(1 if enabled else 0)
+        if config_json is not None:
+            updates.append("config_json = ?"); params.append(config_json)
+        if prompt_template is not None:
+            updates.append("prompt_template = ?"); params.append(prompt_template)
+        if not updates:
+            return {"updated": False}
+        updates.append("updated_at = ?"); params.append(now_iso())
+        params.append(agent_type)
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE agent_definitions SET {', '.join(updates)} WHERE agent_type = ?",
+                params,
+            )
+        return {"updated": True}
+
+    def create_agent_run(self, run_id: str, agent_type: str) -> dict[str, Any]:
+        ts = now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO agent_runs (run_id, agent_type, status, phase, started_at, log_lines_json)
+                   VALUES (?, ?, 'running', 'starting', ?, '[]')""",
+                (run_id, agent_type, ts),
+            )
+        return {"run_id": run_id, "status": "running"}
+
+    def update_agent_run(self, run_id: str, *,
+                         phase: str | None = None,
+                         log_line: str | None = None,
+                         status: str | None = None,
+                         leads_scanned: int | None = None,
+                         proposals_created: int | None = None,
+                         ai_calls_made: int | None = None,
+                         ai_available: bool | None = None,
+                         result: Any = None,
+                         error: str | None = None) -> None:
+        with self._connect() as conn:
+            if log_line:
+                existing = conn.execute(
+                    "SELECT log_lines_json FROM agent_runs WHERE run_id = ?", (run_id,)
+                ).fetchone()
+                if existing:
+                    lines = json.loads(existing["log_lines_json"] or "[]")
+                    lines.append({"t": now_iso(), "msg": log_line})
+                    if len(lines) > 500:
+                        lines = lines[-500:]
+                    conn.execute(
+                        "UPDATE agent_runs SET log_lines_json = ? WHERE run_id = ?",
+                        (json.dumps(lines), run_id),
+                    )
+            updates, params = [], []
+            if phase:
+                updates.append("phase = ?"); params.append(phase)
+            if status:
+                updates.append("status = ?"); params.append(status)
+                if status in ("completed", "failed"):
+                    updates.append("completed_at = ?"); params.append(now_iso())
+            if leads_scanned is not None:
+                updates.append("leads_scanned = ?"); params.append(leads_scanned)
+            if proposals_created is not None:
+                updates.append("proposals_created = ?"); params.append(proposals_created)
+            if ai_calls_made is not None:
+                updates.append("ai_calls_made = ?"); params.append(ai_calls_made)
+            if ai_available is not None:
+                updates.append("ai_available = ?"); params.append(1 if ai_available else 0)
+            if result is not None:
+                updates.append("result_json = ?"); params.append(json.dumps(result, default=str))
+            if error is not None:
+                updates.append("error = ?"); params.append(error)
+            if updates:
+                params.append(run_id)
+                conn.execute(
+                    f"UPDATE agent_runs SET {', '.join(updates)} WHERE run_id = ?",
+                    params,
+                )
+
+    def list_agent_runs(self, agent_type: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            if agent_type:
+                rows = conn.execute(
+                    "SELECT * FROM agent_runs WHERE agent_type = ? ORDER BY started_at DESC LIMIT ?",
+                    (agent_type, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM agent_runs ORDER BY started_at DESC LIMIT ?", (limit,)
+                ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_agent_run(self, run_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM agent_runs WHERE run_id = ?", (run_id,)).fetchone()
+            return dict(row) if row else None
+
+    def create_proposal(self, *, agent_type: str, run_id: str, title: str,
+                        description: str | None = None, payload: dict,
+                        priority: str = "medium") -> int:
+        ts = now_iso()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """INSERT INTO proposals
+                   (agent_type, run_id, title, description, payload_json, priority, status, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)""",
+                (agent_type, run_id, title, description, json.dumps(payload, default=str),
+                 priority, ts),
+            )
+            return cur.lastrowid
+
+    def list_proposals(self, *, status: str | None = None, agent_type: str | None = None,
+                       limit: int = 50) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            where, params = [], []
+            if status:
+                where.append("status = ?"); params.append(status)
+            if agent_type:
+                where.append("agent_type = ?"); params.append(agent_type)
+            clause = f"WHERE {' AND '.join(where)}" if where else ""
+            params.append(limit)
+            rows = conn.execute(
+                f"SELECT * FROM proposals {clause} ORDER BY created_at DESC LIMIT ?",
+                params,
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_proposal(self, proposal_id: int) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM proposals WHERE id = ?", (proposal_id,)).fetchone()
+            return dict(row) if row else None
+
+    def resolve_proposal(self, proposal_id: int, status: str,
+                         notes: str | None = None) -> dict[str, Any]:
+        ts = now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE proposals SET status = ?, revision_notes = ?, resolved_at = ? WHERE id = ?",
+                (status, notes, ts, proposal_id),
+            )
+        return {"id": proposal_id, "status": status}
+
+    def pending_proposal_count(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute("SELECT COUNT(*) AS cnt FROM proposals WHERE status = 'pending'").fetchone()
+            return row["cnt"] if row else 0
+
+    def get_pending_proposal_patterns(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute("""
+                SELECT agent_type, title, COUNT(*) as cnt,
+                       GROUP_CONCAT(id) as ids,
+                       MIN(created_at) as first_at, MAX(created_at) as last_at
+                FROM proposals
+                WHERE status = 'pending'
+                GROUP BY agent_type, title
+                HAVING cnt >= 3
+                ORDER BY cnt DESC
+            """).fetchall()
+            return [dict(r) for r in rows]
+
+    def bulk_deny_proposals(self, ids: list[int], reason: str) -> int:
+        ts = now_iso()
+        with self._connect() as conn:
+            placeholders = ",".join("?" * len(ids))
+            conn.execute(
+                f"UPDATE proposals SET status = 'denied', revision_notes = ?, resolved_at = ? "
+                f"WHERE id IN ({placeholders}) AND status = 'pending'",
+                [reason, ts] + ids,
+            )
+            return len(ids)
+
+    def execute_proposal_payload(self, proposal_id: int) -> dict[str, Any]:
+        proposal = self.get_proposal(proposal_id)
+        if not proposal:
+            return {"error": "Proposal not found"}
+        payload = json.loads(proposal["payload_json"])
+        action = payload.get("action", "")
+
+        if action == "update_status":
+            lead_id = payload["lead_id"]
+            new_status = payload["new_status"]
+            reason = payload.get("reason", "Agent proposal approved")
+            with self._connect() as conn:
+                self._set_lead_status(
+                    conn, lead_id=lead_id, to_status=new_status,
+                    reason=reason, event_message_id=None, change_status=True,
+                )
+            return {"executed": True, "action": action, "lead_id": lead_id}
+
+        if action == "bulk_update_status":
+            lead_ids = payload["lead_ids"]
+            new_status = payload["new_status"]
+            reason = payload.get("reason", "Agent proposal approved")
+            with self._connect() as conn:
+                for lid in lead_ids:
+                    self._set_lead_status(
+                        conn, lead_id=lid, to_status=new_status,
+                        reason=reason, event_message_id=None, change_status=True,
+                    )
+            return {"executed": True, "action": action, "count": len(lead_ids)}
+
+        if action == "add_note":
+            lead_id = payload["lead_id"]
+            content = payload.get("content", "")
+            note_type = payload.get("note_type", "agent")
+            ts = now_iso()
+            with self._connect() as conn:
+                conn.execute(
+                    "INSERT INTO lead_notes (lead_id, note_type, content, created_at) VALUES (?, ?, ?, ?)",
+                    (lead_id, note_type, content, ts),
+                )
+            return {"executed": True, "action": action, "lead_id": lead_id}
+
+        if action == "flag_duplicate":
+            lead_id = payload["lead_id"]
+            duplicate_of = payload.get("duplicate_of", "")
+            reason = payload.get("reason", "Flagged as duplicate by agent")
+            ts = now_iso()
+            with self._connect() as conn:
+                self._set_lead_status(
+                    conn, lead_id=lead_id, to_status="dead",
+                    reason=f"Duplicate of {duplicate_of}: {reason}",
+                    event_message_id=None, change_status=True,
+                )
+                conn.execute(
+                    "INSERT INTO lead_notes (lead_id, note_type, content, created_at) VALUES (?, ?, ?, ?)",
+                    (lead_id, "agent", f"Duplicate of {duplicate_of}: {reason}", ts),
+                )
+            return {"executed": True, "action": action, "lead_id": lead_id}
+
+        if action == "update_underwriting":
+            lead_id = payload["lead_id"]
+            ts = now_iso()
+            with self._connect() as conn:
+                existing = conn.execute(
+                    "SELECT id FROM underwriting_reports WHERE lead_id = ?", (lead_id,)
+                ).fetchone()
+                fields = {k: v for k, v in payload.items() if k not in ("action", "lead_id")}
+                if existing:
+                    sets = ", ".join(f"{k} = ?" for k in fields)
+                    vals = list(fields.values()) + [ts, lead_id]
+                    conn.execute(f"UPDATE underwriting_reports SET {sets}, updated_at = ? WHERE lead_id = ?", vals)
+                else:
+                    fields["lead_id"] = lead_id
+                    fields["created_at"] = ts
+                    fields["updated_at"] = ts
+                    cols = ", ".join(fields.keys())
+                    placeholders = ", ".join("?" * len(fields))
+                    conn.execute(f"INSERT INTO underwriting_reports ({cols}) VALUES ({placeholders})",
+                                 list(fields.values()))
+            return {"executed": True, "action": action, "lead_id": lead_id}
+
+        if action == "consolidate_and_deny":
+            deny_ids = payload.get("deny_proposal_ids", [])
+            reason = payload.get("reason", "Consolidated by Supervisor")
+            if deny_ids:
+                self.bulk_deny_proposals(deny_ids, reason)
+            return {"executed": True, "action": action, "denied": len(deny_ids)}
+
+        if action == "escalate":
+            return {"executed": True, "action": action, "note": "Escalation acknowledged"}
+
+        if action == "daily_digest":
+            return {"executed": True, "action": action, "note": "Digest acknowledged"}
+
+        if action == "create_follow_up":
+            lead_id = payload["lead_id"]
+            fu_type = payload.get("follow_up_type", "callback")
+            scheduled_at = payload.get("scheduled_at", "")
+            notes = payload.get("notes", "")
+            result = self.create_follow_up(lead_id, fu_type, scheduled_at, notes)
+            return {"executed": True, "action": action, **result}
+
+        if action == "complete_follow_up":
+            fu_id = payload["follow_up_id"]
+            outcome = payload.get("outcome", "completed")
+            result = self.complete_follow_up(fu_id, outcome)
+            return {"executed": True, "action": action, **result}
+
+        if action in ("run_skip_trace", "run_underwriting", "run_scrape",
+                       "run_evaluation", "run_verification", "grade_recording",
+                       "transcribe_recording", "ingest_records"):
+            return {"executed": True, "action": action,
+                    "note": "Pipeline action — requires runtime execution (handled by orchestrator)"}
+
+        return {"executed": False, "error": f"Unknown action: {action}"}
 
     def _insert_bridge_event(self, conn: sqlite3.Connection, envelope: dict[str, Any]) -> dict[str, Any]:
         message_id = envelope["message_id"]
@@ -5214,8 +5779,8 @@ Sincerely,
                 """INSERT INTO call_recordings
                    (seller_name, property_address, call_date, file_path, file_name,
                     file_type, transcript, my_performance_json, seller_motivation_json,
-                    call_score, next_action, next_action_due, notes, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    call_score, next_action, next_action_due, notes, lead_id, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     data.get("seller_name", ""),
                     data.get("property_address"),
@@ -5230,6 +5795,7 @@ Sincerely,
                     data.get("next_action"),
                     data.get("next_action_due"),
                     data.get("notes"),
+                    data.get("lead_id"),
                     now,
                     now,
                 ),
@@ -5240,7 +5806,7 @@ Sincerely,
         allowed = {
             "seller_name", "property_address", "call_date", "transcript",
             "my_performance_json", "seller_motivation_json", "call_score",
-            "next_action", "next_action_due", "notes",
+            "next_action", "next_action_due", "notes", "lead_id",
         }
         sets: list[str] = []
         params: list[Any] = []
