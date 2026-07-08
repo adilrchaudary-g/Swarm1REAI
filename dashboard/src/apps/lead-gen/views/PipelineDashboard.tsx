@@ -21,9 +21,10 @@ function StageCard({ label, color, value, max }: { label: string; color: string;
     <div style={{
       flex: 1,
       minWidth: 100,
-      background: '#111118',
-      border: '1px solid #1e1e2e',
-      borderRadius: 8,
+      background: 'rgba(255,255,255,0.03)',
+      backdropFilter: 'blur(20px)',
+      border: '1px solid rgba(255,255,255,0.06)',
+      borderRadius: 14,
       padding: 16,
       position: 'relative',
       overflow: 'hidden',
@@ -36,7 +37,7 @@ function StageCard({ label, color, value, max }: { label: string; color: string;
         transition: 'height 0.3s',
       }} />
       <div style={{ position: 'relative', textAlign: 'center' }}>
-        <div style={{ fontSize: 11, color: '#666', marginBottom: 6 }}>{label}</div>
+        <div style={{ fontSize: 11, color: '#64748b', marginBottom: 6 }}>{label}</div>
         <div style={{ fontSize: 24, fontWeight: 700, color }}>{value.toLocaleString()}</div>
       </div>
     </div>
@@ -64,24 +65,24 @@ export function PipelineDashboard() {
   })
 
   if (isLoading) {
-    return <div style={{ color: '#666' }}>Loading pipeline stats...</div>
+    return <div style={{ color: '#64748b' }}>Loading pipeline stats...</div>
   }
 
   if (error) {
     return (
       <div>
-        <h2 style={{ color: '#e0e0e0', fontSize: 20, marginBottom: 16 }}>Pipeline Dashboard</h2>
+        <h2 style={{ color: '#e2e8f0', fontSize: 20, marginBottom: 16 }}>Pipeline Dashboard</h2>
         <div style={{
-          padding: 24, background: '#1a1a2e', borderRadius: 8,
-          border: '1px solid #2a2a3e', color: '#888',
+          padding: 24, background: 'rgba(99,102,241,0.12)', borderRadius: 14,
+          border: '1px solid #2a2a3e', color: '#94a3b8',
         }}>
           <p style={{ marginBottom: 8 }}>Hermes API not connected.</p>
-          <p style={{ fontSize: 12, color: '#555' }}>
+          <p style={{ fontSize: 12, color: '#475569' }}>
             Start the Hermes server: <code style={{ color: '#6366f1' }}>python3 -m hermes serve</code>
           </p>
         </div>
         <div style={{ marginTop: 24 }}>
-          <h3 style={{ color: '#e0e0e0', fontSize: 16, marginBottom: 12 }}>Pipeline Flow</h3>
+          <h3 style={{ color: '#e2e8f0', fontSize: 16, marginBottom: 12 }}>Pipeline Flow</h3>
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
             {STATUS_STAGES.map((s) => (
               <StageCard key={s.key} label={s.label} color={s.color} value={0} max={1} />
@@ -99,9 +100,9 @@ export function PipelineDashboard() {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <h2 style={{ color: '#e0e0e0', fontSize: 20, margin: 0 }}>
+        <h2 style={{ color: '#e2e8f0', fontSize: 20, margin: 0 }}>
           Pipeline Dashboard
-          <span style={{ color: '#666', fontSize: 14, marginLeft: 8 }}>
+          <span style={{ color: '#64748b', fontSize: 14, marginLeft: 8 }}>
             ({(stats as PipelineStats).total_leads} total)
           </span>
         </h2>
@@ -128,7 +129,7 @@ export function PipelineDashboard() {
           {runOutput}
           <button
             onClick={() => setRunOutput(null)}
-            style={{ float: 'right', background: 'none', border: 'none', color: '#666', cursor: 'pointer' }}
+            style={{ float: 'right', background: 'none', border: 'none', color: '#64748b', cursor: 'pointer' }}
           >
             <X size={16} />
           </button>
@@ -156,8 +157,8 @@ function BreakdownCard({ title, data, colors }: { title: string; data: Record<st
   if (entries.length === 0) return null
   const total = entries.reduce((s, [, v]) => s + v, 0)
   return (
-    <div style={{ background: '#111118', border: '1px solid #1e1e2e', borderRadius: 8, padding: 16 }}>
-      <div style={{ fontSize: 12, color: '#666', marginBottom: 12, textTransform: 'uppercase', letterSpacing: 0.5 }}>{title}</div>
+    <div style={{ background: 'rgba(255,255,255,0.03)', backdropFilter: 'blur(20px)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 14, padding: 16 }}>
+      <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12, textTransform: 'uppercase', letterSpacing: 0.5 }}>{title}</div>
       {entries.map(([key, val]) => {
         const color = colors[key.toLowerCase()] || '#6366f1'
         const pct = total > 0 ? (val / total) * 100 : 0
@@ -165,9 +166,9 @@ function BreakdownCard({ title, data, colors }: { title: string; data: Record<st
           <div key={key} style={{ marginBottom: 8 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 2 }}>
               <span style={{ color: '#ccc' }}>{key}</span>
-              <span style={{ color: '#888' }}>{val}</span>
+              <span style={{ color: '#94a3b8' }}>{val}</span>
             </div>
-            <div style={{ height: 4, background: '#1e1e2e', borderRadius: 2 }}>
+            <div style={{ height: 4, background: 'rgba(255,255,255,0.06)', borderRadius: 2 }}>
               <div style={{ height: '100%', width: `${pct}%`, background: color, borderRadius: 2, transition: 'width 0.3s' }} />
             </div>
           </div>

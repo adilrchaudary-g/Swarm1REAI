@@ -34,7 +34,7 @@ case "${1:-help}" in
     else
       echo "LaunchAgent not loaded. Run: ./swarm install"
       echo "Starting manually..."
-      nohup /opt/homebrew/bin/python3 -m hermes serve --host 127.0.0.1 --port "$PORT" \
+      nohup /opt/homebrew/bin/python3 -m hermes serve --host 0.0.0.0 --port "$PORT" \
         >> "$LOG_FILE" 2>&1 &
       echo "PID: $!"
     fi
@@ -106,10 +106,28 @@ case "${1:-help}" in
     echo "LaunchAgent removed. Server will no longer auto-start."
     ;;
 
+  app)
+    echo "Launching SWARM desktop app..."
+    cd "$SCRIPT_DIR/dashboard"
+    npm run tauri:dev
+    ;;
+
+  app:build)
+    echo "Building SWARM desktop app..."
+    cd "$SCRIPT_DIR/dashboard"
+    npm run tauri:build
+    ;;
+
+  proxy)
+    echo "Starting Claude CLI proxy on port 8766..."
+    cd "$SCRIPT_DIR"
+    /opt/homebrew/bin/python3 -m hermes claude-proxy --port 8766
+    ;;
+
   help|*)
-    echo "Usage: ./swarm {start|stop|restart|status|build|logs|install|uninstall}"
+    echo "Usage: ./swarm {start|stop|restart|status|build|logs|install|uninstall|app|proxy}"
     echo ""
-    echo "  start      Start the server"
+    echo "  start      Start the server (headless)"
     echo "  stop       Stop the server"
     echo "  restart    Restart the server"
     echo "  status     Check server status"
@@ -117,5 +135,8 @@ case "${1:-help}" in
     echo "  logs       Tail server logs"
     echo "  install    Register LaunchAgent (auto-start on login, auto-restart on crash)"
     echo "  uninstall  Remove LaunchAgent"
+    echo "  app        Launch SWARM as a desktop app (Tauri dev mode)"
+    echo "  app:build  Build SWARM as a native macOS app"
+    echo "  proxy      Start the Claude CLI proxy server"
     ;;
 esac

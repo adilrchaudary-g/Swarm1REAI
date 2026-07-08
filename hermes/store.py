@@ -387,11 +387,13 @@ class HermesStore:
                         'phone_value', op.phone_value,
                         'phone_digits', op.phone_digits,
                         'phone_type', op.phone_type,
-                        'dnc', op.dnc
+                        'dnc', op.dnc,
+                        'bad_number', COALESCE(op.bad_number, 0)
                       )
                     )
                     FROM owner_phones op
                     WHERE op.owner_id = l.owner_id
+                      AND COALESCE(op.bad_number, 0) = 0
                   ) AS phones_json
                 FROM leads l
                 JOIN properties p ON p.property_id = l.property_id
@@ -507,20 +509,42 @@ class HermesStore:
                 "INSERT INTO call_attempts (lead_id, disposition, notes, called_at, phone_number) VALUES (?, ?, ?, ?, ?)",
                 (lead_id, disposition, notes, called_at, phone_number),
             )
-            return {"status": "ok", "lead_id": lead_id, "disposition": disposition, "called_at": called_at, "phone_number": phone_number}
+            if disposition == "bad_number" and phone_number:
+                conn.execute(
+                    "UPDATE owner_phones SET bad_number = 1 WHERE phone_digits = ?",
+                    (phone_number,),
+                )
+            attempt_count = conn.execute(
+                "SELECT COUNT(*) as cnt FROM call_attempts WHERE lead_id = ?", (lead_id,)
+            ).fetchone()["cnt"]
+            no_answer_count = conn.execute(
+                "SELECT COUNT(*) as cnt FROM call_attempts WHERE lead_id = ? AND disposition IN ('no_answer', 'voicemail')",
+                (lead_id,),
+            ).fetchone()["cnt"]
+            return {
+                "status": "ok",
+                "lead_id": lead_id,
+                "disposition": disposition,
+                "called_at": called_at,
+                "phone_number": phone_number,
+                "attempt_count": attempt_count,
+                "no_answer_count": no_answer_count,
+            }
 
-    def requeue_stale_leads(self, days_threshold: int = 10) -> dict[str, Any]:
+    def requeue_stale_leads(self, days_threshold: int = 10, max_attempts: int = 6) -> dict[str, Any]:
         """Re-queue leads whose last call attempt was more than `days_threshold` days ago.
 
         Targets leads in 'contacted' or 'enriched' status that have cell phones,
         were previously called (no_answer/voicemail), and haven't been called recently.
+        Leads exceeding `max_attempts` are moved to cooldown instead of re-queued.
         """
         self.initialize()
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days_threshold)).isoformat()
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT DISTINCT ca.lead_id
+                SELECT DISTINCT ca.lead_id,
+                  (SELECT COUNT(*) FROM call_attempts ca2 WHERE ca2.lead_id = ca.lead_id) as attempt_count
                 FROM call_attempts ca
                 JOIN leads l ON l.lead_id = ca.lead_id
                 WHERE ca.disposition IN ('no_answer', 'voicemail')
@@ -537,21 +561,110 @@ class HermesStore:
                 """,
                 (cutoff,),
             ).fetchall()
-            lead_ids = [r["lead_id"] for r in rows]
-            if not lead_ids:
-                return {"status": "ok", "requeued": 0}
-            placeholders = ",".join("?" * len(lead_ids))
-            conn.execute(
-                f"UPDATE leads SET status = 'queued', updated_at = ? WHERE lead_id IN ({placeholders})",
-                [now_iso()] + lead_ids,
-            )
-            for lid in lead_ids:
+            requeue_ids = []
+            cooldown_ids = []
+            for r in rows:
+                if r["attempt_count"] >= max_attempts:
+                    cooldown_ids.append(r["lead_id"])
+                else:
+                    requeue_ids.append(r["lead_id"])
+            now = now_iso()
+            if requeue_ids:
+                placeholders = ",".join("?" * len(requeue_ids))
                 conn.execute(
-                    "INSERT INTO lead_status_history (lead_id, from_status, to_status, reason, created_at) "
-                    "VALUES (?, 'contacted', 'queued', ?, ?)",
-                    (lid, f"Auto re-queued: no contact in {days_threshold} days", now_iso()),
+                    f"UPDATE leads SET status = 'queued', updated_at = ? WHERE lead_id IN ({placeholders})",
+                    [now] + requeue_ids,
                 )
-            return {"status": "ok", "requeued": len(lead_ids)}
+                for lid in requeue_ids:
+                    conn.execute(
+                        "INSERT INTO lead_status_history (lead_id, from_status, to_status, reason, created_at) "
+                        "VALUES (?, 'contacted', 'queued', ?, ?)",
+                        (lid, f"Auto re-queued: no contact in {days_threshold} days", now),
+                    )
+            if cooldown_ids:
+                placeholders = ",".join("?" * len(cooldown_ids))
+                conn.execute(
+                    f"UPDATE leads SET status = 'cooldown', updated_at = ? WHERE lead_id IN ({placeholders})",
+                    [now] + cooldown_ids,
+                )
+                for lid in cooldown_ids:
+                    conn.execute(
+                        "INSERT INTO lead_status_history (lead_id, from_status, to_status, reason, created_at) "
+                        "VALUES (?, 'contacted', 'cooldown', ?, ?)",
+                        (lid, f"Auto cooldown: {max_attempts}+ attempts with no answer", now),
+                    )
+            return {"status": "ok", "requeued": len(requeue_ids), "cooled_down": len(cooldown_ids)}
+
+    def clean_queue_bad_numbers(self) -> dict[str, Any]:
+        """Remove queued leads that have no usable cell phones (all cells are bad or only landlines)."""
+        self.initialize()
+        now = now_iso()
+        with self._connect() as conn:
+            conn.execute("""
+                UPDATE owner_phones SET bad_number = 1
+                WHERE phone_digits IN (
+                    SELECT DISTINCT phone_number FROM call_attempts
+                    WHERE disposition = 'bad_number' AND phone_number IS NOT NULL AND phone_number != ''
+                ) AND COALESCE(bad_number, 0) = 0
+            """)
+            queued = conn.execute(
+                "SELECT lead_id, owner_id FROM leads WHERE status = 'queued'"
+            ).fetchall()
+            removed = []
+            for lead in queued:
+                good_cells = conn.execute(
+                    """SELECT COUNT(*) as cnt FROM owner_phones
+                       WHERE owner_id = ? AND LOWER(phone_type) IN ('cell', 'mobile')
+                       AND COALESCE(bad_number, 0) = 0""",
+                    (lead["owner_id"],),
+                ).fetchone()["cnt"]
+                if good_cells == 0:
+                    conn.execute(
+                        "UPDATE leads SET status = 'archived', updated_at = ? WHERE lead_id = ?",
+                        (now, lead["lead_id"]),
+                    )
+                    conn.execute(
+                        "INSERT INTO lead_status_history (lead_id, from_status, to_status, reason, created_at) "
+                        "VALUES (?, 'queued', 'archived', 'No usable cell phones (all bad or landline-only)', ?)",
+                        (lead["lead_id"], now),
+                    )
+                    removed.append(lead["lead_id"])
+            total_bad = conn.execute(
+                "SELECT COUNT(*) as cnt FROM owner_phones WHERE bad_number = 1"
+            ).fetchone()["cnt"]
+            remaining = conn.execute(
+                "SELECT COUNT(*) as cnt FROM leads WHERE status = 'queued'"
+            ).fetchone()["cnt"]
+            return {
+                "status": "ok",
+                "phones_flagged_bad": total_bad,
+                "leads_removed": len(removed),
+                "queue_remaining": remaining,
+                "removed_lead_ids": removed,
+            }
+
+    def lookup_lead_by_phone(self, phone_digits: str) -> dict[str, Any] | None:
+        """Find a lead by phone number digits."""
+        digits = "".join(c for c in phone_digits if c.isdigit())
+        if len(digits) == 11 and digits[0] == "1":
+            digits = digits[1:]
+        if len(digits) != 10:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT l.lead_id
+                FROM owner_phones op
+                JOIN leads l ON l.owner_id = op.owner_id
+                WHERE op.phone_digits = ?
+                ORDER BY l.updated_at DESC
+                LIMIT 1
+                """,
+                (digits,),
+            ).fetchone()
+            if not row:
+                return None
+            return self.get_lead_detail(row["lead_id"])
 
     def get_call_history(self, lead_id: str) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -1029,34 +1142,55 @@ class HermesStore:
     def get_call_metrics(self, days_back: int = 7) -> dict[str, Any]:
         self.initialize()
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days_back)).isoformat()
+        _non_convo = (
+            "'no_answer','voicemail','busy','disconnected','wrong_number','bad_number'"
+        )
         with self._connect() as conn:
-            calls_made = conn.execute(
-                "SELECT COUNT(DISTINCT lead_id) as cnt FROM lead_status_history "
-                "WHERE to_status IN ('contacted', 'interested', 'not_interested') AND created_at >= ?",
+            total_dials = conn.execute(
+                "SELECT COUNT(*) as cnt FROM call_attempts WHERE called_at >= ?",
                 (cutoff,),
             ).fetchone()["cnt"]
-            contacted = conn.execute(
-                "SELECT COUNT(DISTINCT lead_id) as cnt FROM lead_status_history "
-                "WHERE to_status = 'contacted' AND created_at >= ?",
+            unique_leads_called = conn.execute(
+                "SELECT COUNT(DISTINCT lead_id) as cnt FROM call_attempts WHERE called_at >= ?",
+                (cutoff,),
+            ).fetchone()["cnt"]
+            pickups = conn.execute(
+                f"SELECT COUNT(*) as cnt FROM call_attempts "
+                f"WHERE disposition NOT IN ({_non_convo}) AND called_at >= ?",
                 (cutoff,),
             ).fetchone()["cnt"]
             interested = conn.execute(
-                "SELECT COUNT(DISTINCT lead_id) as cnt FROM lead_status_history "
-                "WHERE to_status = 'interested' AND created_at >= ?",
+                "SELECT COUNT(DISTINCT lead_id) as cnt FROM call_attempts "
+                "WHERE disposition = 'interested' AND called_at >= ?",
                 (cutoff,),
             ).fetchone()["cnt"]
             voicemails = conn.execute(
-                "SELECT COUNT(*) as cnt FROM lead_status_history "
-                "WHERE to_status = 'contacted' AND reason LIKE '%voicemail%' AND created_at >= ?",
+                "SELECT COUNT(*) as cnt FROM call_attempts "
+                "WHERE disposition = 'voicemail' AND called_at >= ?",
                 (cutoff,),
             ).fetchone()["cnt"]
+            bad_numbers = conn.execute(
+                "SELECT COUNT(*) as cnt FROM call_attempts "
+                "WHERE disposition = 'bad_number' AND called_at >= ?",
+                (cutoff,),
+            ).fetchone()["cnt"]
+            no_answers = conn.execute(
+                "SELECT COUNT(*) as cnt FROM call_attempts "
+                "WHERE disposition = 'no_answer' AND called_at >= ?",
+                (cutoff,),
+            ).fetchone()["cnt"]
+            pickup_rate = round(pickups / total_dials * 100, 1) if total_dials else 0
+            interest_rate = round(interested / pickups * 100, 1) if pickups else 0
             return {
-                "calls_made": calls_made,
-                "contacted": contacted,
+                "total_dials": total_dials,
+                "unique_leads_called": unique_leads_called,
+                "pickups": pickups,
                 "interested": interested,
                 "voicemails": voicemails,
-                "contact_rate": round(contacted / calls_made * 100, 1) if calls_made else 0,
-                "interest_rate": round(interested / contacted * 100, 1) if contacted else 0,
+                "no_answers": no_answers,
+                "bad_numbers": bad_numbers,
+                "pickup_rate": pickup_rate,
+                "interest_rate": interest_rate,
                 "days_back": days_back,
             }
 
@@ -1109,6 +1243,9 @@ class HermesStore:
         week_start = (now - timedelta(days=now.weekday())).replace(
             hour=0, minute=0, second=0, microsecond=0
         ).isoformat()
+        _non_convo = (
+            "'no_answer','voicemail','busy','disconnected','wrong_number','bad_number'"
+        )
         with self._connect() as conn:
             calls_today = conn.execute(
                 "SELECT COUNT(*) as cnt FROM call_attempts WHERE called_at >= ?",
@@ -1122,20 +1259,22 @@ class HermesStore:
             ).fetchone()["cnt"]
             total_calls_today = max(calls_today, status_calls_today)
 
-            convos_from_attempts = conn.execute(
-                "SELECT COUNT(*) as cnt FROM call_attempts "
-                "WHERE disposition NOT IN ('no_answer', 'voicemail', 'busy', 'disconnected', 'wrong_number') "
-                "AND called_at >= ?",
+            today_dispositions = conn.execute(
+                "SELECT disposition, COUNT(*) as cnt FROM call_attempts "
+                "WHERE called_at >= ? GROUP BY disposition",
+                (today_start,),
+            ).fetchall()
+            disposition_breakdown = {r["disposition"]: r["cnt"] for r in today_dispositions}
+
+            pickups_today = conn.execute(
+                f"SELECT COUNT(*) as cnt FROM call_attempts "
+                f"WHERE disposition NOT IN ({_non_convo}) "
+                f"AND called_at >= ?",
                 (today_start,),
             ).fetchone()["cnt"]
-            convos_from_status = conn.execute(
-                "SELECT COUNT(DISTINCT lead_id) as cnt FROM lead_status_history "
-                "WHERE to_status IN ('contacted', 'interested', 'not_interested') "
-                "AND (reason IS NULL OR reason NOT LIKE '%voicemail%') "
-                "AND created_at >= ?",
-                (today_start,),
-            ).fetchone()["cnt"]
-            real_convos_today = max(convos_from_attempts, convos_from_status)
+
+            voicemails_today = disposition_breakdown.get("voicemail", 0)
+            bad_numbers_today = disposition_breakdown.get("bad_number", 0)
 
             real_leads_week = conn.execute(
                 "SELECT COUNT(DISTINCT lead_id) as cnt FROM lead_status_history "
@@ -1143,26 +1282,102 @@ class HermesStore:
                 (week_start,),
             ).fetchone()["cnt"]
 
+            calls_week = conn.execute(
+                "SELECT COUNT(*) as cnt FROM call_attempts WHERE called_at >= ?",
+                (week_start,),
+            ).fetchone()["cnt"]
+
             daily_rows = conn.execute(
-                "SELECT DATE(created_at) as day, "
+                "SELECT DATE(a.called_at) as day, "
                 "COUNT(*) as calls, "
-                "SUM(CASE WHEN to_status IN ('contacted', 'interested', 'not_interested') "
-                "AND (reason IS NULL OR reason NOT LIKE '%%voicemail%%') THEN 1 ELSE 0 END) as convos, "
-                "SUM(CASE WHEN to_status = 'interested' THEN 1 ELSE 0 END) as leads "
-                "FROM lead_status_history "
-                "WHERE to_status IN ('contacted', 'interested', 'not_interested') "
-                "AND created_at >= ? "
-                "GROUP BY DATE(created_at) ORDER BY day",
+                f"SUM(CASE WHEN a.disposition NOT IN ({_non_convo}) THEN 1 ELSE 0 END) as convos, "
+                "SUM(CASE WHEN a.disposition = 'interested' THEN 1 ELSE 0 END) as leads "
+                "FROM call_attempts a "
+                "WHERE a.called_at >= ? "
+                "GROUP BY DATE(a.called_at) ORDER BY day",
                 ((now - timedelta(days=14)).isoformat(),),
             ).fetchall()
             history = [dict(r) for r in daily_rows]
 
+            pickup_rate = round(pickups_today / total_calls_today * 100, 1) if total_calls_today else 0
+
             return {
                 "calls_today": total_calls_today,
-                "real_convos_today": real_convos_today,
+                "real_convos_today": pickups_today,
+                "voicemails_today": voicemails_today,
+                "bad_numbers_today": bad_numbers_today,
+                "pickup_rate": pickup_rate,
                 "real_leads_week": real_leads_week,
+                "calls_week": calls_week,
+                "disposition_breakdown": disposition_breakdown,
                 "history": history,
             }
+
+    def get_dial_streak(self) -> dict[str, Any]:
+        self.initialize()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT DATE(called_at) as day FROM call_attempts ORDER BY day DESC"
+            ).fetchall()
+            days = [r["day"] for r in rows]
+            if not days:
+                return {"current_streak": 0, "best_streak": 0, "total_active_days": 0, "last_dial_date": None}
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+            current = 0
+            if days[0] == today or days[0] == yesterday:
+                current = 1
+                for i in range(1, len(days)):
+                    prev = (datetime.strptime(days[i - 1], "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+                    if days[i] == prev:
+                        current += 1
+                    else:
+                        break
+            best = 0
+            streak = 1
+            for i in range(1, len(days)):
+                prev = (datetime.strptime(days[i - 1], "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+                if days[i] == prev:
+                    streak += 1
+                else:
+                    best = max(best, streak)
+                    streak = 1
+            best = max(best, streak, current)
+            return {
+                "current_streak": current,
+                "best_streak": best,
+                "total_active_days": len(days),
+                "last_dial_date": days[0],
+            }
+
+    def get_lead_attempt_counts(self, lead_ids: list[str] | None = None) -> dict[str, dict[str, Any]]:
+        with self._connect() as conn:
+            if lead_ids:
+                placeholders = ",".join("?" * len(lead_ids))
+                rows = conn.execute(
+                    f"""
+                    SELECT lead_id,
+                      COUNT(*) as total_attempts,
+                      MAX(called_at) as last_called_at,
+                      SUM(CASE WHEN disposition = 'bad_number' THEN 1 ELSE 0 END) as bad_number_count
+                    FROM call_attempts
+                    WHERE lead_id IN ({placeholders})
+                    GROUP BY lead_id
+                    """,
+                    lead_ids,
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT lead_id,
+                      COUNT(*) as total_attempts,
+                      MAX(called_at) as last_called_at,
+                      SUM(CASE WHEN disposition = 'bad_number' THEN 1 ELSE 0 END) as bad_number_count
+                    FROM call_attempts
+                    GROUP BY lead_id
+                    """
+                ).fetchall()
+            return {r["lead_id"]: dict(r) for r in rows}
 
     def get_source_roi(self) -> list[dict[str, Any]]:
         self.initialize()
@@ -1734,11 +1949,225 @@ class HermesStore:
         self._migrate_evaluation_and_underwriting(conn)
         self._migrate_agent_system(conn)
         self._migrate_call_attempts_phone(conn)
+        self._migrate_contracts(conn)
+        self._migrate_bad_number_flag(conn)
+        self._migrate_users(conn)
 
     def _migrate_call_attempts_phone(self, conn: sqlite3.Connection) -> None:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(call_attempts)").fetchall()}
         if "phone_number" not in cols:
             conn.execute("ALTER TABLE call_attempts ADD COLUMN phone_number TEXT")
+
+    def _migrate_contracts(self, conn: sqlite3.Connection) -> None:
+        existing = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        if "contracts" not in existing:
+            conn.executescript("""
+                CREATE TABLE contracts (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  lead_id TEXT NOT NULL,
+                  contract_type TEXT NOT NULL DEFAULT 'option_agreement',
+                  status TEXT NOT NULL DEFAULT 'draft',
+                  contract_data_json TEXT NOT NULL,
+                  purchaser_name TEXT,
+                  purchaser_address TEXT,
+                  seller_name TEXT,
+                  seller_address TEXT,
+                  property_address TEXT,
+                  property_county TEXT,
+                  property_state TEXT,
+                  option_fee INTEGER,
+                  purchase_price INTEGER,
+                  amount_due_at_closing INTEGER,
+                  option_term_end_date TEXT,
+                  closing_date TEXT,
+                  purchaser_signature TEXT,
+                  purchaser_signed_at TEXT,
+                  seller_signature TEXT,
+                  seller_signed_at TEXT,
+                  signing_token TEXT UNIQUE,
+                  signing_url TEXT,
+                  signing_email_sent_at TEXT,
+                  seller_email TEXT,
+                  pdf_path TEXT,
+                  signed_pdf_path TEXT,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL,
+                  FOREIGN KEY (lead_id) REFERENCES leads(lead_id) ON DELETE CASCADE
+                );
+                CREATE INDEX idx_contracts_lead_id ON contracts(lead_id);
+                CREATE INDEX idx_contracts_status ON contracts(status);
+                CREATE INDEX idx_contracts_signing_token ON contracts(signing_token);
+            """)
+        if "user_settings" not in existing:
+            conn.executescript("""
+                CREATE TABLE user_settings (
+                  key TEXT PRIMARY KEY,
+                  value TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                );
+            """)
+
+    def _migrate_bad_number_flag(self, conn: sqlite3.Connection) -> None:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(owner_phones)").fetchall()}
+        if "bad_number" not in cols:
+            conn.execute("ALTER TABLE owner_phones ADD COLUMN bad_number INTEGER DEFAULT 0")
+            conn.execute("""
+                UPDATE owner_phones SET bad_number = 1
+                WHERE phone_digits IN (
+                    SELECT DISTINCT phone_number FROM call_attempts
+                    WHERE disposition = 'bad_number' AND phone_number IS NOT NULL AND phone_number != ''
+                )
+            """)
+
+    def _migrate_users(self, conn: sqlite3.Connection) -> None:
+        existing = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        if "users" not in existing:
+            conn.executescript("""
+                CREATE TABLE users (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                  display_name TEXT NOT NULL,
+                  password_hash TEXT NOT NULL,
+                  role TEXT NOT NULL DEFAULT 'caller',
+                  permissions_json TEXT DEFAULT '[]',
+                  active INTEGER DEFAULT 1,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                );
+                CREATE TABLE sessions (
+                  token TEXT PRIMARY KEY,
+                  user_id INTEGER NOT NULL,
+                  created_at TEXT NOT NULL,
+                  expires_at TEXT,
+                  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+                CREATE INDEX idx_sessions_user ON sessions(user_id);
+            """)
+            self._seed_admin_user(conn)
+
+    def _seed_admin_user(self, conn: sqlite3.Connection) -> None:
+        ts = now_iso()
+        pw_hash = hashlib.sha256(b"admin").hexdigest()
+        conn.execute(
+            """INSERT OR IGNORE INTO users
+               (username, display_name, password_hash, role, permissions_json, active, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            ("admin", "Adil", pw_hash, "admin", json.dumps(["*"]), 1, ts, ts),
+        )
+
+    # ── User & Auth ────────────────────────────────────────────────────
+
+    def _hash_password(self, password: str) -> str:
+        return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+    def authenticate(self, username: str, password: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM users WHERE username = ? AND active = 1",
+                (username,),
+            ).fetchone()
+            if not row:
+                return None
+            user = dict(row)
+            if user["password_hash"] != self._hash_password(password):
+                return None
+            import uuid
+            token = uuid.uuid4().hex
+            ts = now_iso()
+            expires = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+            conn.execute(
+                "INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
+                (token, user["id"], ts, expires),
+            )
+            user.pop("password_hash", None)
+            return {"user": user, "token": token}
+
+    def validate_session(self, token: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT u.* FROM sessions s
+                   JOIN users u ON u.id = s.user_id
+                   WHERE s.token = ? AND u.active = 1""",
+                (token,),
+            ).fetchone()
+            if not row:
+                return None
+            user = dict(row)
+            user.pop("password_hash", None)
+            return user
+
+    def logout(self, token: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+
+    def list_users(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, username, display_name, role, permissions_json, active, created_at, updated_at FROM users ORDER BY id"
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def create_user(self, username: str, display_name: str, password: str,
+                    role: str = "caller", permissions: list[str] | None = None) -> dict[str, Any]:
+        ts = now_iso()
+        pw_hash = self._hash_password(password)
+        perms = permissions or self._default_permissions(role)
+        with self._connect() as conn:
+            cur = conn.execute(
+                """INSERT INTO users (username, display_name, password_hash, role, permissions_json, active, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, 1, ?, ?)""",
+                (username, display_name, pw_hash, role, json.dumps(perms), ts, ts),
+            )
+            return {
+                "id": cur.lastrowid, "username": username, "display_name": display_name,
+                "role": role, "permissions_json": json.dumps(perms), "active": 1,
+                "created_at": ts, "updated_at": ts,
+            }
+
+    def update_user(self, user_id: int, **fields: Any) -> dict[str, Any] | None:
+        allowed = {"display_name", "role", "active", "permissions_json"}
+        updates, params = [], []
+        for k, v in fields.items():
+            if k in allowed:
+                updates.append(f"{k} = ?")
+                params.append(v)
+        if "password" in fields and fields["password"]:
+            updates.append("password_hash = ?")
+            params.append(self._hash_password(fields["password"]))
+        if not updates:
+            return None
+        updates.append("updated_at = ?")
+        params.append(now_iso())
+        params.append(user_id)
+        with self._connect() as conn:
+            conn.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = ?", params)
+            row = conn.execute(
+                "SELECT id, username, display_name, role, permissions_json, active, created_at, updated_at FROM users WHERE id = ?",
+                (user_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def delete_user(self, user_id: int) -> bool:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+            return True
+
+    @staticmethod
+    def _default_permissions(role: str) -> list[str]:
+        if role == "admin":
+            return ["*"]
+        if role == "caller":
+            return [
+                "view:call_list", "view:dial_mode", "view:recordings",
+                "view:own_kpi", "action:log_call", "action:add_note",
+                "action:upload_recording",
+            ]
+        return []
 
     def _migrate_evaluation_and_underwriting(self, conn: sqlite3.Connection) -> None:
         lead_cols = {row[1] for row in conn.execute("PRAGMA table_info(leads)").fetchall()}
@@ -3427,9 +3856,9 @@ class HermesStore:
             dict(phone)
             for phone in conn.execute(
                 """
-                SELECT phone_value, phone_digits, phone_type, dnc
+                SELECT phone_value, phone_digits, phone_type, dnc, COALESCE(bad_number, 0) as bad_number
                 FROM owner_phones
-                WHERE owner_id = ?
+                WHERE owner_id = ? AND COALESCE(bad_number, 0) = 0
                 ORDER BY id
                 """,
                 (row["owner_id"],),
@@ -5854,3 +6283,182 @@ Sincerely,
                 "graded": graded,
                 "by_score": by_score,
             }
+
+    # ── Contracts ──────────────────────────────────────────────────
+
+    def create_contract(self, data: dict[str, Any]) -> dict[str, Any]:
+        import uuid
+        now = datetime.now(timezone.utc).isoformat()
+        token = uuid.uuid4().hex
+        purchase_price = int(data.get("purchase_price") or 0)
+        option_fee = int(data.get("option_fee") or 0)
+        amount_due = purchase_price - option_fee
+
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO contracts (
+                  lead_id, contract_type, status, contract_data_json,
+                  purchaser_name, purchaser_address, seller_name, seller_address,
+                  property_address, property_county, property_state,
+                  option_fee, purchase_price, amount_due_at_closing,
+                  option_term_end_date, closing_date,
+                  signing_token, seller_email,
+                  created_at, updated_at
+                ) VALUES (?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    data["lead_id"],
+                    data.get("contract_type", "option_agreement"),
+                    json.dumps(data),
+                    data.get("purchaser_name"),
+                    data.get("purchaser_address"),
+                    data.get("seller_name"),
+                    data.get("seller_address"),
+                    data.get("property_address"),
+                    data.get("property_county"),
+                    data.get("property_state"),
+                    option_fee,
+                    purchase_price,
+                    amount_due,
+                    data.get("option_term_end_date"),
+                    data.get("closing_date"),
+                    token,
+                    data.get("seller_email"),
+                    now,
+                    now,
+                ),
+            )
+            contract_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        return {"status": "ok", "id": contract_id, "signing_token": token}
+
+    def get_contract(self, contract_id: int) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM contracts WHERE id = ?", (contract_id,)).fetchone()
+        return dict(row) if row else None
+
+    def list_contracts(
+        self,
+        lead_id: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if lead_id:
+            clauses.append("c.lead_id = ?")
+            params.append(lead_id)
+        if status:
+            clauses.append("c.status = ?")
+            params.append(status)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT c.*, p.address_full, o.owner_name
+                FROM contracts c
+                LEFT JOIN leads l ON l.lead_id = c.lead_id
+                LEFT JOIN properties p ON p.property_id = l.property_id
+                LEFT JOIN owners o ON o.owner_id = l.owner_id
+                {where}
+                ORDER BY c.created_at DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_contract_by_token(self, token: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM contracts WHERE signing_token = ?", (token,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def sign_contract(
+        self, contract_id: int, role: str, signature_base64: str
+    ) -> dict[str, Any]:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            if role == "purchaser":
+                conn.execute(
+                    "UPDATE contracts SET purchaser_signature = ?, purchaser_signed_at = ?, updated_at = ? WHERE id = ?",
+                    (signature_base64, now, now, contract_id),
+                )
+            elif role == "seller":
+                conn.execute(
+                    "UPDATE contracts SET seller_signature = ?, seller_signed_at = ?, updated_at = ? WHERE id = ?",
+                    (signature_base64, now, now, contract_id),
+                )
+            row = conn.execute("SELECT * FROM contracts WHERE id = ?", (contract_id,)).fetchone()
+            if row and row["purchaser_signature"] and row["seller_signature"]:
+                conn.execute(
+                    "UPDATE contracts SET status = 'fully_signed', updated_at = ? WHERE id = ?",
+                    (now, contract_id),
+                )
+                conn.execute(
+                    "UPDATE leads SET status = 'under_contract', updated_at = ? WHERE lead_id = ?",
+                    (now, row["lead_id"]),
+                )
+                conn.execute(
+                    """INSERT INTO lead_status_history (lead_id, from_status, to_status, reason, created_at)
+                       VALUES (?, (SELECT status FROM leads WHERE lead_id = ?), 'under_contract', 'Contract fully signed', ?)""",
+                    (row["lead_id"], row["lead_id"], now),
+                )
+        return {"status": "ok", "id": contract_id, "role": role}
+
+    def sign_contract_by_token(self, token: str, signature_base64: str) -> dict[str, Any]:
+        contract = self.get_contract_by_token(token)
+        if not contract:
+            return {"status": "error", "message": "Invalid signing token"}
+        if contract["status"] == "fully_signed":
+            return {"status": "error", "message": "Contract already fully signed"}
+        return self.sign_contract(contract["id"], "seller", signature_base64)
+
+    def update_contract(self, contract_id: int, updates: dict[str, Any]) -> dict[str, Any]:
+        now = datetime.now(timezone.utc).isoformat()
+        allowed = {
+            "status", "signing_url", "signing_email_sent_at",
+            "seller_email", "pdf_path", "signed_pdf_path",
+        }
+        sets: list[str] = ["updated_at = ?"]
+        params: list[Any] = [now]
+        for k, v in updates.items():
+            if k in allowed:
+                sets.append(f"{k} = ?")
+                params.append(v)
+        params.append(contract_id)
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE contracts SET {', '.join(sets)} WHERE id = ?", params,
+            )
+        return {"status": "ok", "id": contract_id}
+
+    def void_contract(self, contract_id: int) -> dict[str, Any]:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE contracts SET status = 'voided', updated_at = ? WHERE id = ?",
+                (now, contract_id),
+            )
+        return {"status": "ok", "id": contract_id}
+
+    # ── User Settings ──────────────────────────────────────────────
+
+    def get_user_settings(self) -> dict[str, str]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT key, value FROM user_settings").fetchall()
+        return {row["key"]: row["value"] for row in rows}
+
+    def update_user_settings(self, data: dict[str, str]) -> dict[str, Any]:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            for key, value in data.items():
+                conn.execute(
+                    """INSERT INTO user_settings (key, value, updated_at)
+                       VALUES (?, ?, ?)
+                       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at""",
+                    (key, value, now),
+                )
+        return {"status": "ok", "updated": len(data)}

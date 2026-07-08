@@ -21,9 +21,9 @@ export function CourtRecordsPanel() {
             onClick={() => setSubView(tab.id)}
             style={{
               padding: '6px 14px', borderRadius: 5,
-              border: `1px solid ${subView === tab.id ? '#6366f1' : '#2a2a3e'}`,
+              border: `1px solid ${subView === tab.id ? '#6366f1' : 'rgba(255,255,255,0.08)'}`,
               background: subView === tab.id ? '#6366f120' : 'transparent',
-              color: subView === tab.id ? '#818cf8' : '#666',
+              color: subView === tab.id ? '#818cf8' : '#64748b',
               fontSize: 12, cursor: 'pointer',
             }}
           >
@@ -42,14 +42,14 @@ export function CourtRecordsPanel() {
 function confidenceColor(c: string | null): string {
   if (c === 'high') return '#22c55e'
   if (c === 'medium') return '#f59e0b'
-  return '#666'
+  return '#64748b'
 }
 
 function statusColor(s: string): string {
   if (s === 'qualified') return '#22c55e'
   if (s === 'ingested') return '#6366f1'
   if (s === 'junk') return '#ef4444'
-  return '#888'
+  return '#94a3b8'
 }
 
 /* ── Cases View ─────────────────────────────────────────────── */
@@ -114,7 +114,7 @@ function CasesView() {
     }
   }
 
-  if (isLoading) return <div style={{ color: '#666', fontSize: 13 }}>Loading cases...</div>
+  if (isLoading) return <div style={{ color: '#64748b', fontSize: 13 }}>Loading cases...</div>
 
   return (
     <div>
@@ -164,7 +164,7 @@ function CasesView() {
       {(ingest.isError || bulkClassify.isError || classify.isError) && (
         <div style={{
           padding: '8px 14px', borderRadius: 6, marginBottom: 12,
-          background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
+          background: 'rgba(239,68,68,0.06)', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
         }}>
           {ingest.isError && `Ingest failed: ${ingest.error instanceof Error ? ingest.error.message : String(ingest.error)}`}
           {bulkClassify.isError && `Classify failed: ${bulkClassify.error instanceof Error ? bulkClassify.error.message : String(bulkClassify.error)}`}
@@ -182,12 +182,12 @@ function CasesView() {
       )}
 
       {!cases || cases.length === 0 ? (
-        <div style={{ color: '#555', fontSize: 13 }}>
+        <div style={{ color: '#475569', fontSize: 13 }}>
           No court record cases yet. Run a scrape from the "Scrape Court Records" tab.
         </div>
       ) : (
         <div>
-          <div style={{ display: 'flex', fontSize: 11, color: '#555', padding: '4px 0', borderBottom: '1px solid #1e1e2e', marginBottom: 4 }}>
+          <div style={{ display: 'flex', fontSize: 11, color: '#475569', padding: '4px 0', borderBottom: '1px solid #1e1e2e', marginBottom: 4 }}>
             <div style={{ width: 28 }}>
               <input type="checkbox" checked={selectedIds.size === cases.length} onChange={toggleAll} />
             </div>
@@ -237,7 +237,7 @@ function CaseRow({
       <div
         style={{
           display: 'flex', alignItems: 'center', padding: '6px 0', fontSize: 12,
-          cursor: 'pointer', color: '#ccc',
+          cursor: 'pointer', color: '#cbd5e1',
         }}
         onClick={onToggleExpand}
       >
@@ -245,11 +245,11 @@ function CaseRow({
           <input type="checkbox" checked={selected} readOnly />
         </div>
         <div style={{ flex: 1, minWidth: 100, color: '#818cf8' }}>{c.case_number}</div>
-        <div style={{ width: 80, color: '#888' }}>{c.file_date || '-'}</div>
+        <div style={{ width: 80, color: '#94a3b8' }}>{c.file_date || '-'}</div>
         <div style={{ flex: 1.5, minWidth: 120 }}>{c.deceased_name || '-'}</div>
         <div style={{ flex: 1.5, minWidth: 120, fontWeight: 600 }}>{c.pr_name || '-'}</div>
-        <div style={{ flex: 2, minWidth: 140, color: addr ? '#ccc' : '#444' }}>{addr || 'No property found'}</div>
-        <div style={{ width: 70, textAlign: 'right', color: '#888' }}>
+        <div style={{ flex: 2, minWidth: 140, color: addr ? '#cbd5e1' : '#334155' }}>{addr || 'No property found'}</div>
+        <div style={{ width: 70, textAlign: 'right', color: '#94a3b8' }}>
           {c.assessed_value ? `$${c.assessed_value.toLocaleString()}` : '-'}
         </div>
         <div style={{ width: 60, textAlign: 'center' }}>
@@ -272,15 +272,15 @@ function CaseRow({
       {expanded && (
         <div style={{ padding: '8px 28px 12px', background: '#0a0a14', borderRadius: 6, marginBottom: 4 }}>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 24px', fontSize: 12, color: '#aaa' }}>
-            <div><span style={{ color: '#555' }}>Case Title:</span> {c.case_title || '-'}</div>
-            <div><span style={{ color: '#555' }}>Court ID:</span> {c.court_id}</div>
-            <div><span style={{ color: '#555' }}>PR Address:</span> {c.pr_address || '-'}</div>
-            <div><span style={{ color: '#555' }}>PR Role:</span> {c.pr_role || '-'}</div>
-            <div><span style={{ color: '#555' }}>APN:</span> {c.apn || '-'}</div>
-            <div><span style={{ color: '#555' }}>Market Value:</span> {c.market_value ? `$${c.market_value.toLocaleString()}` : '-'}</div>
+            <div><span style={{ color: '#475569' }}>Case Title:</span> {c.case_title || '-'}</div>
+            <div><span style={{ color: '#475569' }}>Court ID:</span> {c.court_id}</div>
+            <div><span style={{ color: '#475569' }}>PR Address:</span> {c.pr_address || '-'}</div>
+            <div><span style={{ color: '#475569' }}>PR Role:</span> {c.pr_role || '-'}</div>
+            <div><span style={{ color: '#475569' }}>APN:</span> {c.apn || '-'}</div>
+            <div><span style={{ color: '#475569' }}>Market Value:</span> {c.market_value ? `$${c.market_value.toLocaleString()}` : '-'}</div>
             {c.case_url && (
               <div style={{ gridColumn: '1 / -1' }}>
-                <span style={{ color: '#555' }}>Case URL:</span>{' '}
+                <span style={{ color: '#475569' }}>Case URL:</span>{' '}
                 <a href={c.case_url} target="_blank" rel="noopener noreferrer" style={{ color: '#818cf8' }}>
                   View on CaseNet
                 </a>
@@ -359,7 +359,7 @@ function ScrapeView() {
     <div>
       <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 16 }}>
         <div>
-          <label style={{ fontSize: 11, color: '#555', display: 'block', marginBottom: 3 }}>County</label>
+          <label style={{ fontSize: 11, color: '#475569', display: 'block', marginBottom: 3 }}>County</label>
           <select
             value={county}
             onChange={(e) => setCounty(e.target.value)}
@@ -375,7 +375,7 @@ function ScrapeView() {
           </select>
         </div>
         <div>
-          <label style={{ fontSize: 11, color: '#555', display: 'block', marginBottom: 3 }}>Case Type</label>
+          <label style={{ fontSize: 11, color: '#475569', display: 'block', marginBottom: 3 }}>Case Type</label>
           <select value={caseType} onChange={(e) => setCaseType(e.target.value)} style={inputStyle}>
             <option value="Probate">Probate</option>
             <option value="Civil">Civil</option>
@@ -383,7 +383,7 @@ function ScrapeView() {
           </select>
         </div>
         <div>
-          <label style={{ fontSize: 11, color: '#555', display: 'block', marginBottom: 3 }}>Days Back</label>
+          <label style={{ fontSize: 11, color: '#475569', display: 'block', marginBottom: 3 }}>Days Back</label>
           <input
             type="number"
             value={daysBack}
@@ -409,7 +409,7 @@ function ScrapeView() {
 
       {scrapeOpen && (
         <div style={{
-          background: '#0a0a14', border: '1px solid #1e1e2e', borderRadius: 8,
+          background: '#0a0a14', border: '1px solid #1e1e2e', borderRadius: 14,
           padding: 16, marginTop: 8,
         }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
@@ -420,14 +420,14 @@ function ScrapeView() {
                   background: '#22c55e', animation: 'statusPulse 1.5s infinite',
                 }} />
               )}
-              <span style={{ color: '#888', fontSize: 12 }}>
-                Phase: <span style={{ color: '#e0e0e0' }}>{phase}</span>
+              <span style={{ color: '#94a3b8', fontSize: 12 }}>
+                Phase: <span style={{ color: '#e2e8f0' }}>{phase}</span>
               </span>
             </div>
             {!isRunning && (
               <button
                 onClick={() => setScrapeOpen(false)}
-                style={{ background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: 12 }}
+                style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: 12 }}
               >
                 Close
               </button>
@@ -436,7 +436,7 @@ function ScrapeView() {
 
           <div className={`log-tablet${isRunning ? ' active' : scrapeStatus?.error || mutationError ? ' error' : scrapeStatus?.phase === 'complete' ? ' complete' : ''}`} style={{ maxHeight: 300 }}>
             {logLines.map((line, i) => (
-              <div key={i} style={{ color: line.includes('ERROR') ? '#ef4444' : line.includes('✓') ? '#22c55e' : line.includes('[court-records]') ? '#6366f1' : '#888' }}>
+              <div key={i} style={{ color: line.includes('ERROR') ? '#ef4444' : line.includes('✓') ? '#22c55e' : line.includes('[court-records]') ? '#6366f1' : '#94a3b8' }}>
                 {line}
               </div>
             ))}
@@ -502,7 +502,7 @@ function CountiesView() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['court-record-counties'] }),
   })
 
-  if (isLoading) return <div style={{ color: '#666', fontSize: 13 }}>Loading...</div>
+  if (isLoading) return <div style={{ color: '#64748b', fontSize: 13 }}>Loading...</div>
 
   return (
     <div>
@@ -513,7 +513,7 @@ function CountiesView() {
 
         <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
           <div>
-            <label style={{ fontSize: 11, color: '#555', display: 'block', marginBottom: 3 }}>County</label>
+            <label style={{ fontSize: 11, color: '#475569', display: 'block', marginBottom: 3 }}>County</label>
             <input
               value={newCounty}
               onChange={(e) => setNewCounty(e.target.value)}
@@ -522,7 +522,7 @@ function CountiesView() {
             />
           </div>
           <div>
-            <label style={{ fontSize: 11, color: '#555', display: 'block', marginBottom: 3 }}>State</label>
+            <label style={{ fontSize: 11, color: '#475569', display: 'block', marginBottom: 3 }}>State</label>
             <input
               value={newState}
               onChange={(e) => setNewState(e.target.value)}
@@ -530,7 +530,7 @@ function CountiesView() {
             />
           </div>
           <div>
-            <label style={{ fontSize: 11, color: '#555', display: 'block', marginBottom: 3 }}>Court ID</label>
+            <label style={{ fontSize: 11, color: '#475569', display: 'block', marginBottom: 3 }}>Court ID</label>
             <input
               value={newCourtId}
               onChange={(e) => setNewCourtId(e.target.value)}
@@ -554,7 +554,7 @@ function CountiesView() {
       {(upsert.isError || toggle.isError) && (
         <div style={{
           padding: '8px 14px', borderRadius: 6, marginBottom: 12,
-          background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
+          background: 'rgba(239,68,68,0.06)', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
         }}>
           {upsert.isError && `Add county failed: ${upsert.error instanceof Error ? upsert.error.message : String(upsert.error)}`}
           {toggle.isError && `Toggle failed: ${toggle.error instanceof Error ? toggle.error.message : String(toggle.error)}`}
@@ -563,7 +563,7 @@ function CountiesView() {
 
       {counties && counties.length > 0 && (
         <div>
-          <div style={{ display: 'flex', fontSize: 11, color: '#555', padding: '4px 0', borderBottom: '1px solid #1e1e2e', marginBottom: 4 }}>
+          <div style={{ display: 'flex', fontSize: 11, color: '#475569', padding: '4px 0', borderBottom: '1px solid #1e1e2e', marginBottom: 4 }}>
             <div style={{ flex: 1 }}>County</div>
             <div style={{ width: 50 }}>State</div>
             <div style={{ flex: 1 }}>Court ID</div>
@@ -573,13 +573,13 @@ function CountiesView() {
             <div style={{ width: 60, textAlign: 'center' }}>Active</div>
           </div>
           {counties.map((c) => (
-            <div key={c.id} style={{ display: 'flex', alignItems: 'center', padding: '6px 0', fontSize: 12, color: '#ccc', borderBottom: '1px solid #111' }}>
+            <div key={c.id} style={{ display: 'flex', alignItems: 'center', padding: '6px 0', fontSize: 12, color: '#cbd5e1', borderBottom: '1px solid #111' }}>
               <div style={{ flex: 1, fontWeight: 600 }}>{c.county}</div>
-              <div style={{ width: 50, color: '#888' }}>{c.state}</div>
-              <div style={{ flex: 1, color: '#888' }}>{c.court_id}</div>
+              <div style={{ width: 50, color: '#94a3b8' }}>{c.state}</div>
+              <div style={{ flex: 1, color: '#94a3b8' }}>{c.court_id}</div>
               <div style={{ width: 60, textAlign: 'center' }}>{c.case_count}</div>
               <div style={{ width: 70, textAlign: 'center', color: '#6366f1' }}>{c.ingested_count}</div>
-              <div style={{ width: 100, textAlign: 'center', color: '#666', fontSize: 11 }}>
+              <div style={{ width: 100, textAlign: 'center', color: '#64748b', fontSize: 11 }}>
                 {c.last_scraped_at ? new Date(c.last_scraped_at).toLocaleDateString() : 'Never'}
               </div>
               <div style={{ width: 60, textAlign: 'center' }}>
@@ -592,7 +592,7 @@ function CountiesView() {
                     fontSize: 10, fontWeight: 600,
                     opacity: toggle.isPending ? 0.5 : 1,
                     background: c.active ? '#22c55e20' : '#44444420',
-                    color: c.active ? '#22c55e' : '#666',
+                    color: c.active ? '#22c55e' : '#64748b',
                   }}
                 >
                   {c.active ? 'ON' : 'OFF'}

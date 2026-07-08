@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Phone, X, ArrowRight, PhoneCall } from 'lucide-react'
+import { Phone, X, ArrowLeft, ArrowRight, PhoneCall, AlertTriangle, PhoneIncoming, FileText } from 'lucide-react'
 import { hermesClient } from '../../../api/hermes-client'
 import type { Lead } from '../../../api/types'
 
@@ -42,6 +42,7 @@ interface Props {
 export function DialMode({ leads, onClose }: Props) {
   const queryClient = useQueryClient()
   const isMobile = useIsMobile()
+  const [frozenLeads] = useState(() => [...leads])
   const [currentIndex, setCurrentIndex] = useState(0)
   const [phase, setPhase] = useState<Phase>('idle')
   const [showDetail, setShowDetail] = useState(false)
@@ -51,17 +52,39 @@ export function DialMode({ leads, onClose }: Props) {
   const [voicemailIds, setVoicemailIds] = useState<string[]>([])
   const [lastBadNumberId, setLastBadNumberId] = useState<string | null>(null)
   const [phoneIndex, setPhoneIndex] = useState(0)
+  const [callbackOpen, setCallbackOpen] = useState(false)
+  const [callbackPhone, setCallbackPhone] = useState('')
+  const [callbackLead, setCallbackLead] = useState<Lead | null>(null)
+  const [callbackLoading, setCallbackLoading] = useState(false)
+  const [callbackError, setCallbackError] = useState('')
+  const [panelOpen, setPanelOpen] = useState(!isMobile)
+
+  const MAX_ATTEMPTS = 6
+  const { data: attemptCounts } = useQuery({
+    queryKey: ['attempt-counts', frozenLeads.map(l => l.lead_id).join(',')],
+    queryFn: async () => {
+      const res = await fetch('/api/leads/attempt-counts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lead_ids: frozenLeads.map(l => l.lead_id) }),
+      })
+      if (!res.ok) return {}
+      return res.json() as Promise<Record<string, { total_attempts: number; last_called_at: string; bad_number_count: number }>>
+    },
+  })
 
   const queue = useMemo(() => {
-    const main = leads.filter((l) => !skippedIds.has(l.lead_id) && !voicemailIds.includes(l.lead_id))
+    const main = frozenLeads.filter((l) => !skippedIds.has(l.lead_id) && !voicemailIds.includes(l.lead_id))
     const vm = voicemailIds
       .filter((id) => !skippedIds.has(id))
-      .map((id) => leads.find((l) => l.lead_id === id))
+      .map((id) => frozenLeads.find((l) => l.lead_id === id))
       .filter(Boolean) as Lead[]
     return [...main, ...vm]
-  }, [leads, skippedIds, voicemailIds])
+  }, [frozenLeads, skippedIds, voicemailIds])
 
   const lead = queue[currentIndex] ?? null
+  const leadAttempts = attemptCounts?.[lead?.lead_id ?? '']?.total_attempts ?? 0
+  const isOverDialed = leadAttempts >= MAX_ATTEMPTS
   const total = queue.length
   const hasNext = currentIndex < total - 1
   const totalPhones = lead?.callable_phones?.length ?? 0
@@ -134,11 +157,10 @@ export function DialMode({ leads, onClose }: Props) {
     if (lead) hermesClient.leads.logCall(lead.lead_id, disposition, notes, rawPhone || undefined).catch(() => {})
   }
 
-  function handleAnswered() { setLastBadNumberId(null); logCall('answered'); setPhase('answered') }
+  function handleAnswered() { setLastBadNumberId(null); setPhase('answered') }
 
   function handleNoAnswer() {
     setLastBadNumberId(null)
-    logCall('no_answer')
     setPhase('no_answer')
   }
 
@@ -206,6 +228,24 @@ export function DialMode({ leads, onClose }: Props) {
     advanceNext(lead!.lead_id)
   }
 
+  async function handleCallbackLookup() {
+    const digits = callbackPhone.replace(/\D/g, '')
+    if (digits.length < 10) {
+      setCallbackError('Enter a full phone number')
+      return
+    }
+    setCallbackLoading(true)
+    setCallbackError('')
+    const result = await hermesClient.leads.lookupByPhone(digits)
+    setCallbackLoading(false)
+    if (result) {
+      setCallbackLead(result)
+      setCallbackOpen(false)
+    } else {
+      setCallbackError('No lead found for that number')
+    }
+  }
+
   const mobBtn: React.CSSProperties = isMobile
     ? { minHeight: 48, fontSize: 15 }
     : {}
@@ -227,14 +267,34 @@ export function DialMode({ leads, onClose }: Props) {
   const tierColor = TIER_COLORS[lead.motivation_tier || ''] || '#666'
 
   return (
-    <Overlay onClose={onClose} isMobile={isMobile}>
+    <Overlay onClose={onClose} isMobile={isMobile} rightPanel={
+      !isMobile && panelOpen ? <ScriptPanel onClose={() => setPanelOpen(false)} /> : undefined
+    }>
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <div style={{ color: '#6366f1', fontSize: 13, fontWeight: 700, letterSpacing: 1 }}>DIAL TIME</div>
           <span style={{ color: '#334155', fontSize: 12 }}>{currentIndex + 1} / {total}</span>
         </div>
-        <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', display: 'flex', padding: 8 }}><X size={20} /></button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          {!isMobile && (
+            <button
+              onClick={() => setPanelOpen(!panelOpen)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 5,
+                background: panelOpen ? '#6366f120' : '#1a1a2e',
+                border: `1px solid ${panelOpen ? '#6366f140' : '#1e1e2e'}`,
+                borderRadius: 6, padding: '5px 10px',
+                color: panelOpen ? '#a5b4fc' : '#64748b',
+                cursor: 'pointer', fontSize: 12, fontWeight: 600,
+              }}
+            >
+              <FileText size={13} />
+              Script
+            </button>
+          )}
+          <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', display: 'flex', padding: 8 }}><X size={20} /></button>
+        </div>
       </div>
 
       {/* Progress bar */}
@@ -242,12 +302,36 @@ export function DialMode({ leads, onClose }: Props) {
         <div style={{ height: '100%', background: '#6366f1', borderRadius: 2, width: `${((currentIndex + 1) / total) * 100}%`, transition: 'width 0.3s' }} />
       </div>
 
+      {isOverDialed && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          padding: '8px 12px', marginBottom: 12, borderRadius: 8,
+          background: '#271118', border: '1px solid #3a1a1a',
+          color: '#ef4444', fontSize: 12,
+        }}>
+          <AlertTriangle size={14} />
+          <span>This lead has been called {leadAttempts} times with no progress. Consider skipping.</span>
+        </div>
+      )}
+
       {/* Lead card */}
       <div style={{ background: '#0d0d14', border: '1px solid #1e1e2e', borderRadius: 10, padding: isMobile ? 16 : 20, marginBottom: 16 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div style={{ minWidth: 0, flex: 1 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#e2e8f0', fontSize: isMobile ? 16 : 18, fontWeight: 600, marginBottom: 4 }}>
               <span>{lead.owner_name || 'Unknown Owner'}</span>
+              {leadAttempts > 0 && (
+                <span style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 3,
+                  padding: '2px 7px', borderRadius: 10,
+                  background: isOverDialed ? '#271118' : '#1e1e2e',
+                  fontSize: 11, fontWeight: 700,
+                  color: isOverDialed ? '#ef4444' : '#94a3b8',
+                }}>
+                  {isOverDialed && <AlertTriangle size={10} />}
+                  {leadAttempts}x called
+                </span>
+              )}
               {totalPhones > 0 && (
                 <span style={{
                   display: 'inline-flex', alignItems: 'center', gap: 4,
@@ -386,6 +470,9 @@ export function DialMode({ leads, onClose }: Props) {
               Next Lead
             </button>
           )}
+          <button onClick={() => setPhase('idle')} style={{ ...btn, ...mobBtn, background: '#23232a', color: '#94a3b8', padding: '12px 16px', fontSize: 12 }}>
+            Back
+          </button>
         </div>
       )}
 
@@ -396,6 +483,9 @@ export function DialMode({ leads, onClose }: Props) {
           </button>
           <button onClick={handleNotInterested} style={{ ...btn, ...mobBtn, flex: 1, background: '#271118', color: '#ef4444', padding: '12px 0', fontSize: 13, fontWeight: 600 }}>
             Not Interested
+          </button>
+          <button onClick={() => { logCall('wrong_number'); handleBadNumber() }} style={{ ...btn, ...mobBtn, background: '#1a1a2e', color: '#f97316', padding: '12px 14px', fontSize: 11 }}>
+            Wrong Number
           </button>
           <button onClick={() => setPhase('idle')} style={{ ...btn, ...mobBtn, background: '#23232a', color: '#94a3b8', padding: '12px 16px', fontSize: 12 }}>
             Back
@@ -428,8 +518,11 @@ export function DialMode({ leads, onClose }: Props) {
 
       {phase === 'schedule_fu' && (
         <div>
-          <div style={{ color: '#22c55e', fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
+          <div style={{ color: '#22c55e', fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
             Marked as Interested
+          </div>
+          <div style={{ color: '#eab308', fontSize: 11, marginBottom: 10 }}>
+            Set a follow-up date — interested leads without callbacks fall through the cracks.
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: isMobile ? 'stretch' : 'flex-end', flexDirection: isMobile ? 'column' : 'row' }}>
             <div style={{ flex: 1 }}>
@@ -453,14 +546,14 @@ export function DialMode({ leads, onClose }: Props) {
                 Save
               </button>
               <button onClick={handleSkipFollowUp} style={{ ...btn, ...mobBtn, flex: 1, background: '#23232a', color: '#94a3b8', padding: '9px 14px', fontSize: 12 }}>
-                Skip
+                Skip (no follow-up)
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Skip / Undo row — always visible in idle */}
+      {/* Back / Skip / Undo row — always visible in idle */}
       {phase === 'idle' && (
         <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
           {lastBadNumberId && (
@@ -473,12 +566,92 @@ export function DialMode({ leads, onClose }: Props) {
             </button>
           )}
           <button
+            onClick={() => { if (currentIndex > 0) { setCurrentIndex((i) => i - 1); setPhoneIndex(0); setShowDetail(false); setNote(''); setFuDate('') } }}
+            disabled={currentIndex === 0}
+            style={{ ...btn, ...mobBtn, flex: 1, background: isMobile ? '#1e1e25' : 'transparent', color: currentIndex === 0 ? '#1e1e2e' : (isMobile ? '#94a3b8' : '#334155'), padding: isMobile ? '12px 0' : '8px 0', fontSize: isMobile ? 14 : 11, border: isMobile ? '1px solid #27272e' : 'none', borderRadius: 8, cursor: currentIndex === 0 ? 'default' : 'pointer' }}
+          >
+            <ArrowLeft size={isMobile ? 16 : 12} style={{ marginRight: 4, verticalAlign: 'middle' }} /> Back Lead
+          </button>
+          <button
             onClick={() => { setLastBadNumberId(null); advanceNext() }}
             style={{ ...btn, ...mobBtn, flex: 1, background: isMobile ? '#1e1e25' : 'transparent', color: isMobile ? '#94a3b8' : '#334155', padding: isMobile ? '12px 0' : '8px 0', fontSize: isMobile ? 14 : 11, border: isMobile ? '1px solid #27272e' : 'none', borderRadius: 8 }}
           >
             Skip Lead <ArrowRight size={isMobile ? 16 : 12} style={{ marginLeft: 4, verticalAlign: 'middle' }} />
           </button>
         </div>
+      )}
+
+      {/* Callback section */}
+      {!callbackOpen && !callbackLead && (
+        <button
+          onClick={() => { setCallbackOpen(true); setCallbackPhone(''); setCallbackError('') }}
+          style={{
+            ...btn, ...mobBtn, width: '100%', marginTop: 12,
+            padding: isMobile ? '14px 0' : '10px 0',
+            background: '#0f1a2e', border: '1px solid #1a2d4a', borderRadius: 10,
+            color: '#60a5fa', fontSize: isMobile ? 14 : 13, fontWeight: 600,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+          }}
+        >
+          <PhoneIncoming size={isMobile ? 18 : 16} />
+          Getting a Call Back
+        </button>
+      )}
+
+      {callbackOpen && (
+        <div style={{
+          marginTop: 12, padding: isMobile ? 16 : 14,
+          background: '#0f1a2e', border: '1px solid #1a2d4a', borderRadius: 10,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+            <PhoneIncoming size={16} color="#60a5fa" />
+            <span style={{ color: '#e2e8f0', fontSize: 14, fontWeight: 600 }}>Incoming Callback</span>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              type="tel"
+              value={callbackPhone}
+              onChange={(e) => setCallbackPhone(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleCallbackLookup() }}
+              placeholder="Enter caller's number"
+              autoFocus
+              style={{
+                flex: 1, padding: isMobile ? '12px' : '9px 12px',
+                background: '#0a0a12', border: '1px solid #1e1e2e', borderRadius: 6,
+                color: '#e2e8f0', fontSize: isMobile ? 18 : 15, fontFamily: 'monospace',
+              }}
+            />
+            <button
+              onClick={handleCallbackLookup}
+              disabled={callbackLoading}
+              style={{
+                ...btn, background: '#3b82f6', color: '#fff',
+                padding: isMobile ? '12px 20px' : '9px 16px',
+                fontSize: isMobile ? 15 : 13,
+              }}
+            >
+              {callbackLoading ? '...' : 'Find'}
+            </button>
+            <button
+              onClick={() => { setCallbackOpen(false); setCallbackError('') }}
+              style={{ ...btn, background: '#1e1e2e', color: '#64748b', padding: '9px 12px' }}
+            >
+              <X size={16} />
+            </button>
+          </div>
+          {callbackError && (
+            <div style={{ color: '#ef4444', fontSize: 12, marginTop: 6 }}>{callbackError}</div>
+          )}
+        </div>
+      )}
+
+      {callbackLead && (
+        <CallbackCard
+          lead={callbackLead}
+          isMobile={isMobile}
+          onDismiss={() => { setCallbackLead(null); setCallbackPhone('') }}
+          onDone={() => { setCallbackLead(null); setCallbackPhone('') }}
+        />
       )}
     </Overlay>
   )
@@ -488,18 +661,25 @@ const btn: React.CSSProperties = {
   border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 600,
 }
 
-function Overlay({ children, onClose }: { children: React.ReactNode; onClose: () => void; isMobile?: boolean }) {
+function Overlay({ children, onClose: _onClose, rightPanel }: { children: React.ReactNode; onClose: () => void; isMobile?: boolean; rightPanel?: React.ReactNode }) {
   return createPortal(
     <div
       style={{
         position: 'fixed', inset: 0, zIndex: 9999,
         background: '#0a0a12',
+        display: 'flex',
+      }}
+    >
+      <div style={{
+        width: rightPanel ? '440px' : '100%',
+        flexShrink: 0,
         overflow: 'auto',
         padding: '16px 16px env(safe-area-inset-bottom, 16px)',
         boxSizing: 'border-box',
-      }}
-    >
-      {children}
+      }}>
+        {children}
+      </div>
+      {rightPanel}
     </div>,
     document.body
   )
@@ -616,5 +796,405 @@ function Row({ label, value }: { label: string; value: string }) {
       <div style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase' }}>{label}</div>
       <div style={{ fontSize: 13, color: '#cbd5e1' }}>{value}</div>
     </div>
+  )
+}
+
+type CbPhase = 'idle' | 'answered' | 'interested' | 'schedule_fu' | 'done'
+
+function CallbackCard({ lead, isMobile, onDismiss, onDone }: {
+  lead: Lead; isMobile: boolean; onDismiss: () => void; onDone: () => void
+}) {
+  const queryClient = useQueryClient()
+  const [cbPhase, setCbPhase] = useState<CbPhase>('idle')
+  const [cbNote, setCbNote] = useState('')
+  const [cbFuDate, setCbFuDate] = useState('')
+  const [showCbDetail, setShowCbDetail] = useState(false)
+
+  const tierColor = TIER_COLORS[lead.motivation_tier || ''] || '#666'
+
+  const invalidate = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['queue-all'] })
+    queryClient.invalidateQueries({ queryKey: ['pipeline-stats'] })
+    queryClient.invalidateQueries({ queryKey: ['kpi-summary'] })
+  }, [queryClient])
+
+  const updateStatus = useMutation({
+    mutationFn: ({ status, reason }: { status: string; reason?: string }) =>
+      hermesClient.leads.updateStatus(lead.lead_id, status, reason),
+    onSuccess: () => invalidate(),
+  })
+
+  const addNote = useMutation({
+    mutationFn: () => hermesClient.leads.addNote(lead.lead_id, 'call_note', cbNote),
+    onSuccess: () => invalidate(),
+  })
+
+  const scheduleFollowUp = useMutation({
+    mutationFn: () => hermesClient.followUps.create(lead.lead_id, 'callback', cbFuDate, cbNote || undefined),
+    onSuccess: async () => {
+      await updateStatus.mutateAsync({ status: 'follow_up', reason: `Follow-up scheduled ${cbFuDate}` })
+      queryClient.invalidateQueries({ queryKey: ['follow-ups'] })
+    },
+  })
+
+  function logCall(disposition: string, notes?: string) {
+    hermesClient.leads.logCall(lead.lead_id, disposition, notes).catch(() => {})
+  }
+
+  async function handleNotInterested() {
+    logCall('not_interested')
+    await updateStatus.mutateAsync({ status: 'not_interested', reason: 'Not interested — callback' })
+    setCbPhase('done')
+  }
+
+  async function handleSaveInterested() {
+    if (cbNote.trim()) await addNote.mutateAsync()
+    logCall('interested', cbNote.trim() || undefined)
+    await updateStatus.mutateAsync({ status: 'interested', reason: 'Interested — callback' })
+    setCbPhase('schedule_fu')
+  }
+
+  async function handleSaveFollowUp() {
+    if (cbFuDate) await scheduleFollowUp.mutateAsync()
+    setCbPhase('done')
+  }
+
+  const cbBtn: React.CSSProperties = {
+    ...btn, fontSize: 12, padding: isMobile ? '10px 0' : '8px 0', fontWeight: 600,
+  }
+
+  return (
+    <div style={{
+      marginTop: 12, background: '#0d1a14', border: '1px solid #1a3d2a',
+      borderRadius: 12, padding: isMobile ? 16 : 14,
+    }}>
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <PhoneIncoming size={16} color="#22c55e" />
+          <span style={{ color: '#22c55e', fontSize: 12, fontWeight: 700, letterSpacing: 0.5 }}>CALLBACK</span>
+        </div>
+        <button
+          onClick={onDismiss}
+          style={{ ...btn, background: '#1a2e1a', color: '#64748b', padding: '3px 8px', fontSize: 11, display: 'flex', alignItems: 'center', gap: 3 }}
+        >
+          <X size={11} /> Dismiss
+        </button>
+      </div>
+
+      {/* Lead info */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 6 }}>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ color: '#e2e8f0', fontSize: isMobile ? 16 : 15, fontWeight: 600, marginBottom: 2 }}>
+            {lead.owner_name || 'Unknown Owner'}
+          </div>
+          <div style={{ color: '#94a3b8', fontSize: 13 }}>
+            {lead.address_full || lead.address_street || '—'}
+          </div>
+        </div>
+        <span style={{
+          padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600,
+          color: tierColor, background: '#1a1520', whiteSpace: 'nowrap', flexShrink: 0,
+        }}>
+          {lead.motivation_tier} {lead.motivation_score ?? ''}
+        </span>
+      </div>
+
+      {/* Quick stats */}
+      <div style={{ display: 'flex', gap: 14, fontSize: 11, flexWrap: 'wrap', marginBottom: 8 }}>
+        {lead.mao && (
+          <div><span style={{ color: '#475569' }}>MAO </span><span style={{ color: '#22c55e' }}>${lead.mao.toLocaleString()}</span></div>
+        )}
+        {lead.arv_estimate && (
+          <div><span style={{ color: '#475569' }}>ARV </span><span style={{ color: '#cbd5e1' }}>${lead.arv_estimate.toLocaleString()}</span></div>
+        )}
+        {lead.persona_primary && (
+          <div><span style={{ color: '#475569' }}>Persona </span><span style={{ color: '#cbd5e1' }}>{lead.persona_primary}</span></div>
+        )}
+      </div>
+
+      {/* Distress signals */}
+      {lead.distress_signals.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 8 }}>
+          {lead.distress_signals.map((sig) => (
+            <span key={sig} style={{ padding: '2px 6px', borderRadius: 4, fontSize: 10, background: '#271118', color: '#ef4444' }}>{sig}</span>
+          ))}
+        </div>
+      )}
+
+      {/* View Details toggle */}
+      <button
+        onClick={() => setShowCbDetail(!showCbDetail)}
+        style={{ ...btn, background: '#0d2618', color: '#6ee7b7', width: '100%', marginBottom: 8, padding: '6px 0', fontSize: 11, border: '1px solid #1a3d2a', borderRadius: 6 }}
+      >
+        {showCbDetail ? 'Hide Details' : 'View Details'}
+      </button>
+
+      {showCbDetail && <DetailExpand lead={lead} isMobile={isMobile} />}
+
+      {/* Action buttons — phase-dependent */}
+      {cbPhase === 'idle' && (
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={() => { logCall('answered'); setCbPhase('answered') }}
+            style={{ ...cbBtn, flex: 1, background: '#22c55e', color: '#fff' }}>
+            Answered
+          </button>
+          <button onClick={() => { logCall('no_answer'); onDismiss() }}
+            style={{ ...cbBtn, flex: 1, background: '#ef4444', color: '#fff' }}>
+            No Answer
+          </button>
+        </div>
+      )}
+
+      {cbPhase === 'answered' && (
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={() => setCbPhase('interested')}
+            style={{ ...cbBtn, flex: 1, background: '#0d211c', color: '#22c55e' }}>
+            Interested
+          </button>
+          <button onClick={handleNotInterested}
+            style={{ ...cbBtn, flex: 1, background: '#271118', color: '#ef4444' }}>
+            Not Interested
+          </button>
+          <button onClick={() => setCbPhase('idle')}
+            style={{ ...cbBtn, background: '#1a2e1a', color: '#94a3b8', padding: '8px 12px' }}>
+            Back
+          </button>
+        </div>
+      )}
+
+      {cbPhase === 'interested' && (
+        <div>
+          <textarea
+            value={cbNote}
+            onChange={(e) => setCbNote(e.target.value)}
+            placeholder="Notes from the callback..."
+            rows={2}
+            style={{
+              width: '100%', padding: '8px 10px', background: '#0a0a12', border: '1px solid #1a3d2a',
+              borderRadius: 6, color: '#cbd5e1', fontSize: isMobile ? 15 : 13, resize: 'vertical', marginBottom: 8, boxSizing: 'border-box',
+            }}
+          />
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={handleSaveInterested}
+              style={{ ...cbBtn, flex: 1, background: '#22c55e', color: '#fff' }}>
+              Save & Schedule Follow-Up
+            </button>
+            <button onClick={() => setCbPhase('answered')}
+              style={{ ...cbBtn, background: '#1a2e1a', color: '#94a3b8', padding: '8px 12px' }}>
+              Back
+            </button>
+          </div>
+        </div>
+      )}
+
+      {cbPhase === 'schedule_fu' && (
+        <div>
+          <div style={{ color: '#22c55e', fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Marked as Interested</div>
+          <div style={{ display: 'flex', gap: 8, alignItems: isMobile ? 'stretch' : 'center', flexDirection: isMobile ? 'column' : 'row' }}>
+            <div style={{ flex: 1 }}>
+              <label style={{ fontSize: 10, color: '#475569', display: 'block', marginBottom: 3 }}>Follow-up date</label>
+              <input
+                type="date"
+                value={cbFuDate}
+                onChange={(e) => setCbFuDate(e.target.value)}
+                style={{
+                  width: '100%', padding: isMobile ? '10px' : '7px 10px', background: '#0a0a12', border: '1px solid #1a3d2a',
+                  borderRadius: 4, color: '#cbd5e1', fontSize: isMobile ? 15 : 13, boxSizing: 'border-box',
+                }}
+              />
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={handleSaveFollowUp} disabled={!cbFuDate}
+                style={{ ...cbBtn, flex: 1, background: cbFuDate ? '#eab308' : '#222', color: '#000', padding: '8px 16px' }}>
+                Save
+              </button>
+              <button onClick={() => { setCbPhase('done') }}
+                style={{ ...cbBtn, flex: 1, background: '#1a2e1a', color: '#94a3b8', padding: '8px 12px' }}>
+                Skip
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {cbPhase === 'done' && (
+        <div style={{ textAlign: 'center', padding: '8px 0' }}>
+          <div style={{ color: '#22c55e', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Done</div>
+          <button onClick={onDone} style={{ ...cbBtn, background: '#1a2e1a', color: '#6ee7b7', padding: '8px 20px' }}>
+            Close Callback
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ScriptPanel({ onClose }: { onClose: () => void }) {
+  return (
+    <div style={{
+      flex: 1, minWidth: 0,
+      borderLeft: '1px solid #1e1e2e',
+      display: 'flex', flexDirection: 'column',
+      overflow: 'hidden',
+    }}>
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '13px 16px', borderBottom: '1px solid #1e1e2e', flexShrink: 0,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <FileText size={15} color="#6366f1" />
+          <span style={{ color: '#e2e8f0', fontSize: 14, fontWeight: 600 }}>Cold Calling Script</span>
+        </div>
+        <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', display: 'flex', padding: 4 }}>
+          <X size={16} />
+        </button>
+      </div>
+      <div style={{ flex: 1, overflow: 'auto', padding: '20px 24px' }}>
+        <ColdCallScript />
+      </div>
+    </div>
+  )
+}
+
+function ScriptSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div style={{ marginBottom: 24 }}>
+      <div style={{
+        fontSize: 12, fontWeight: 700, color: '#6366f1',
+        textTransform: 'uppercase', letterSpacing: 0.8,
+        marginBottom: 10, paddingBottom: 6,
+        borderBottom: '1px solid #1e1e2e',
+      }}>{title}</div>
+      {children}
+    </div>
+  )
+}
+
+function SayLine({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{
+      borderLeft: '3px solid #22c55e', padding: '8px 12px', margin: '6px 0',
+      background: '#0d1a14', borderRadius: '0 6px 6px 0',
+      color: '#e2e8f0', fontSize: 13, lineHeight: 1.5,
+    }}>
+      {children}
+    </div>
+  )
+}
+
+function ToneNote({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{ color: '#64748b', fontSize: 12, fontStyle: 'italic', padding: '2px 0 2px 15px', lineHeight: 1.5 }}>
+      {children}
+    </div>
+  )
+}
+
+function SellerLine({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{ color: '#94a3b8', fontSize: 12, fontStyle: 'italic', padding: '4px 0 4px 15px' }}>
+      <span style={{ color: '#475569' }}>SELLER:</span> {children}
+    </div>
+  )
+}
+
+function RuleCallout({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'flex-start', gap: 6,
+      padding: '6px 10px', margin: '6px 0',
+      background: '#1f0f0f', border: '1px solid #3a1a1a',
+      borderRadius: 6, color: '#ef4444', fontSize: 11, lineHeight: 1.5,
+    }}>
+      <AlertTriangle size={12} style={{ flexShrink: 0, marginTop: 2 }} />
+      <span>{children}</span>
+    </div>
+  )
+}
+
+function ColdCallScript() {
+  return (
+    <>
+      <div style={{
+        padding: '10px 14px', marginBottom: 20,
+        background: '#12121c', border: '1px solid #1e1e2e', borderRadius: 8,
+      }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: '#ef4444', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>
+          3 Non-Negotiable Rules
+        </div>
+        <div style={{ fontSize: 12, color: '#e2e8f0', lineHeight: 1.8 }}>
+          <div>1. <strong>Never</strong> negotiate numbers, repair costs, or offer amounts.</div>
+          <div>2. <strong>Never</strong> book more than 3 days out.</div>
+          <div>3. Get <strong>2–3 confirmations</strong> before calling it booked.</div>
+        </div>
+      </div>
+
+      <ScriptSection title="Opening">
+        <SayLine>"Hi, is this <strong>[Seller Name]</strong>?"</SayLine>
+        <ToneNote>Curious, casual tone — like you already half-know them</ToneNote>
+        <SellerLine>"Yeah, who's this?"</SellerLine>
+        <SayLine>"Yeah, I was calling about your property on <strong>[address]</strong>."</SayLine>
+        <ToneNote>Trail off here, let it hang — don't explain yourself yet</ToneNote>
+        <RuleCallout>Do NOT open with "the reason for my call is..." — it sounds scripted.</RuleCallout>
+      </ScriptSection>
+
+      <ScriptSection title="Qualifying">
+        <SayLine>"Have you thought about selling it any time in the near future?"</SayLine>
+        <SellerLine>"Yeah, we've been thinking about it."</SellerLine>
+        <SayLine>"Got it — how long has this been going on?"</SayLine>
+        <ToneNote>10–20 seconds, surface level only. Grab one basic reason + rough timeline — nothing deeper. This is not the time to dig into pain or negotiate.</ToneNote>
+      </ScriptSection>
+
+      <ScriptSection title="If They Ask Why You're Calling">
+        <SayLine>"We actually buy properties in the area and yours looked like a good fit — I just wanted to ask a couple quick questions about the property. Does that sound fair?"</SayLine>
+      </ScriptSection>
+
+      <ScriptSection title="Bridge to Booking">
+        <SayLine>"What I'd like to do is set up a quick appointment with my partner — he buys properties in this area, and he'll be the one to go over the details on the property's condition with you so we can get you an accurate cash offer."</SayLine>
+        <SayLine>"Would you be completely opposed to him giving you a call tomorrow at <strong>[time]</strong>, or would that work for you?"</SayLine>
+        <ToneNote>If tomorrow doesn't work, offer the next 1–2 days — never further than 3 days out.</ToneNote>
+      </ScriptSection>
+
+      <ScriptSection title="Locking the Appointment">
+        <SayLine>"Great — so tomorrow at 3pm works for you?"</SayLine>
+        <SellerLine>"Yeah, that works."</SellerLine>
+        <SayLine>"Perfect, he'll give you a call at 3pm. You two can go over the details and possibly work out a cash offer on the home."</SayLine>
+        <SayLine>"So just to confirm — tomorrow at 3pm, he'll be calling you. Sound good?"</SayLine>
+        <RuleCallout>That's 2 confirmations minimum. If either answer felt hesitant, ask a third time before hanging up.</RuleCallout>
+      </ScriptSection>
+
+      <ScriptSection title="Closing the Call">
+        <SayLine>"Awesome, thank you for your time. Just so he reaches you at the right number — is this the best number to call you at tomorrow at 3pm?"</SayLine>
+        <SellerLine>"Yeah, this number's good." / "Actually, call my cell instead — [number]."</SellerLine>
+        <SayLine>"Perfect, he'll call you at 3pm tomorrow. Thanks again, <strong>[Seller Name]</strong>."</SayLine>
+        <ToneNote>Confirm or update the phone number, then log immediately in Slack.</ToneNote>
+      </ScriptSection>
+
+      <ScriptSection title="Common Objections">
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: '#eab308', marginBottom: 4 }}>"How much are you offering?"</div>
+          <SayLine>"That's exactly what my partner will go over with you on the call — he'll walk you through some numbers based on the property."</SayLine>
+        </div>
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: '#eab308', marginBottom: 4 }}>"I'm not really interested."</div>
+          <SayLine>"No worries at all — mind if I ask, is that a hard no, or more like not right now?"</SayLine>
+        </div>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 600, color: '#eab308', marginBottom: 4 }}>"Who are you? Is this a scam?"</div>
+          <SayLine>"Totally fair question — we're a local group of investors that buy homes directly from homeowners in the area, no realtors or fees involved."</SayLine>
+        </div>
+      </ScriptSection>
+
+      <ScriptSection title="After Every Call — Logging">
+        <div style={{ fontSize: 12, color: '#cbd5e1', lineHeight: 1.8 }}>
+          <div>• <strong>Booked appointment</strong> → log in Slack with name, address, date/time, phone</div>
+          <div>• <strong>Callback requested</strong> → log date/time to call back</div>
+          <div>• <strong>Not interested / hard no</strong> → log as dead lead</div>
+          <div>• <strong>No answer</strong> → log as attempted, will be redialed</div>
+        </div>
+        <RuleCallout>Never leave a call unlogged. Unlogged calls = leads that get lost.</RuleCallout>
+      </ScriptSection>
+    </>
   )
 }

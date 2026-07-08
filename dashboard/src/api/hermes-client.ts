@@ -1,9 +1,18 @@
-import type { Lead, PhoneRecord, PipelineStats, SourceAdapter, KpiSummary, FollowUp, MarketInfo, SocialComment, SocialCampaign, SocialBanditStats, FoiaRequest, WaterShutoffRecord, WaterShutoffStats, FsboListing, FsboMarket, FsboStats, FsboScrapeStatus, CourtRecordCounty, CourtRecordCase, CourtRecordStats, CourtRecordScrapeStatus, CountyScouting, CountyScoutingStats, ScoutPipelineStatus, DistressedProperty, CallRecording, CallRecordingStats, UnderwritingReport, EvaluationStatus, ConversionFunnel, CallMetrics, DailyActivity, SourceRoi, TrackerKpis, AgentDefinition, AgentRun, Proposal, AgentProxyStatus } from './types'
+import type { Lead, PhoneRecord, PipelineStats, SourceAdapter, KpiSummary, FollowUp, MarketInfo, SocialComment, SocialCampaign, SocialBanditStats, FoiaRequest, WaterShutoffRecord, WaterShutoffStats, FsboListing, FsboMarket, FsboStats, FsboScrapeStatus, CourtRecordCounty, CourtRecordCase, CourtRecordStats, CourtRecordScrapeStatus, CountyScouting, CountyScoutingStats, ScoutPipelineStatus, DistressedProperty, CallRecording, CallRecordingStats, UnderwritingReport, EvaluationStatus, ConversionFunnel, CallMetrics, DailyActivity, SourceRoi, TrackerKpis, DialStreak, AgentDefinition, AgentRun, Proposal, AgentProxyStatus, Contract, ContractData, UserSettings } from './types'
 
 const BASE = '/api'
 
+function authHeaders(): Record<string, string> {
+  const token = localStorage.getItem('swarm_token')
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`)
+  const res = await fetch(`${BASE}${path}`, { headers: authHeaders() })
+  if (res.status === 401) {
+    localStorage.removeItem('swarm_token')
+    window.location.reload()
+  }
   if (!res.ok) throw new Error(`GET ${path}: ${res.status} ${res.statusText}`)
   return res.json()
 }
@@ -11,9 +20,13 @@ async function get<T>(path: string): Promise<T> {
 async function post<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: body ? JSON.stringify(body) : undefined,
   })
+  if (res.status === 401) {
+    localStorage.removeItem('swarm_token')
+    window.location.reload()
+  }
   if (!res.ok) throw new Error(`POST ${path}: ${res.status} ${res.statusText}`)
   return res.json()
 }
@@ -33,13 +46,14 @@ function normalizeLead(raw: any): Lead {
   }
 
   const callable_phones = phones.filter(
-    (p) => p.phone_type?.toLowerCase() === 'cell' || p.phone_type?.toLowerCase() === 'mobile'
+    (p) => (p.phone_type?.toLowerCase() === 'cell' || p.phone_type?.toLowerCase() === 'mobile')
+      && !(p as any).bad_number
   )
 
   return {
     ...raw,
     distress_signals,
-    callable_phones: callable_phones.length > 0 ? callable_phones : phones,
+    callable_phones,
     phone_numbers: phones,
   }
 }
@@ -73,6 +87,12 @@ export const hermesClient = {
       post<{ status: string; disposition: string; called_at: string; phone_number?: string }>(`/leads/${id}/calls`, { disposition, notes, phone_number }),
     callHistory: (id: string) =>
       get<Array<{ id: number; lead_id: string; disposition: string; notes: string | null; called_at: string; phone_number: string | null }>>(`/leads/${id}/calls`),
+    lookupByPhone: async (phone: string): Promise<Lead | null> => {
+      try {
+        const raw = await get<any>(`/leads/lookup-by-phone?phone=${encodeURIComponent(phone)}`)
+        return raw ? normalizeLead(raw) : null
+      } catch { return null }
+    },
   },
 
   pipeline: {
@@ -151,6 +171,7 @@ export const hermesClient = {
     daily: (days = 30) => get<DailyActivity[]>(`/kpi/daily?days=${days}`),
     sourceRoi: () => get<SourceRoi[]>('/kpi/source-roi'),
     tracker: () => get<TrackerKpis>('/kpi/tracker'),
+    dialStreak: () => get<DialStreak>('/kpi/dial-streak'),
   },
 
   markets: {
@@ -369,7 +390,7 @@ export const hermesClient = {
     get: (id: number) => get<CallRecording>(`/call-recordings/${id}`),
     stats: () => get<CallRecordingStats>('/call-recordings/stats'),
     create: async (formData: FormData) => {
-      const res = await fetch(`${BASE}/call-recordings`, { method: 'POST', body: formData })
+      const res = await fetch(`${BASE}/call-recordings`, { method: 'POST', body: formData, headers: authHeaders() })
       if (!res.ok) throw new Error(`POST /call-recordings: ${res.status}`)
       return res.json() as Promise<{ status: string; id: number }>
     },
@@ -387,10 +408,50 @@ export const hermesClient = {
     autoLink: (id: number) =>
       post<{ status: string; lead_id?: string; matches: Array<{ lead_id: string; owner_name: string; address_street: string; address_city: string; address_state: string; status: string }> }>(`/call-recordings/${id}/auto-link`),
     uploadSession: async (formData: FormData) => {
-      const res = await fetch(`${BASE}/recordings/session`, { method: 'POST', body: formData })
+      const res = await fetch(`${BASE}/recordings/session`, { method: 'POST', body: formData, headers: authHeaders() })
       if (!res.ok) throw new Error(`POST /recordings/session: ${res.status}`)
       return res.json() as Promise<{ status: string; session_id: string; file: string }>
     },
+  },
+
+  contracts: {
+    list: (params?: { lead_id?: string; status?: string; limit?: number }) => {
+      const qs = new URLSearchParams()
+      if (params) {
+        for (const [k, v] of Object.entries(params)) {
+          if (v !== undefined) qs.set(k, String(v))
+        }
+      }
+      const query = qs.toString()
+      return get<Contract[]>(`/contracts${query ? `?${query}` : ''}`)
+    },
+    get: (id: number) => get<Contract>(`/contracts/${id}`),
+    create: (data: ContractData) =>
+      post<{ status: string; id: number; signing_token: string }>('/contracts', data),
+    sign: (id: number, role: string, signature: string) =>
+      post<{ status: string; id: number; role: string }>(`/contracts/${id}/sign`, { role, signature }),
+    send: (id: number, sellerEmail: string) =>
+      post<{ status: string; signing_url?: string; email_sent_to?: string; message?: string }>(
+        `/contracts/${id}/send`, { seller_email: sellerEmail },
+      ),
+    void: (id: number) =>
+      post<{ status: string; id: number }>(`/contracts/${id}/void`),
+    pdfUrl: (id: number) => `${BASE}/contracts/${id}/pdf`,
+    uploadPdf: async (id: number, pdfBlob: Blob) => {
+      const res = await fetch(`${BASE}/contracts/${id}/upload-pdf`, {
+        method: 'POST',
+        body: pdfBlob,
+        headers: authHeaders(),
+      })
+      if (!res.ok) throw new Error(`Upload PDF: ${res.status}`)
+      return res.json() as Promise<{ status: string; path: string }>
+    },
+  },
+
+  settings: {
+    get: () => get<UserSettings>('/settings'),
+    update: (data: Record<string, string>) =>
+      post<{ status: string; updated: number }>('/settings', data),
   },
 
   agents: {

@@ -48,14 +48,14 @@ export function SourcesPanel() {
 
   const toggle = (key: string) => setExpanded((prev) => (prev === key ? null : key))
 
-  if (isLoading) return <div style={{ color: '#666' }}>Loading sources...</div>
+  if (isLoading) return <div style={{ color: '#64748b' }}>Loading sources...</div>
 
   const pendingCount = pendingStats?.total_pending ?? 0
 
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <h2 style={{ color: '#e0e0e0', fontSize: 20, margin: 0 }}>Lead Sources</h2>
+        <h2 style={{ color: '#e2e8f0', fontSize: 20, margin: 0 }}>Lead Sources</h2>
         <div style={{ display: 'flex', gap: 10 }}>
           <button
             onClick={() => verifyBatch.mutate()}
@@ -94,7 +94,7 @@ export function SourcesPanel() {
       {(runPipeline.isError || verifyBatch.isError) && (
         <div style={{
           padding: '10px 14px', borderRadius: 6, marginBottom: 12,
-          background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
+          background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.15)', color: '#ef4444', fontSize: 12,
         }}>
           {runPipeline.isError && `Pipeline failed: ${runPipeline.error instanceof Error ? runPipeline.error.message : String(runPipeline.error)}`}
           {verifyBatch.isError && `Verification failed: ${verifyBatch.error instanceof Error ? verifyBatch.error.message : String(verifyBatch.error)}`}
@@ -103,8 +103,8 @@ export function SourcesPanel() {
 
       {error && (
         <div style={{
-          padding: 16, background: '#1a1a2e', borderRadius: 8,
-          border: '1px solid #2a2a3e', color: '#888', marginBottom: 16,
+          padding: 16, background: 'rgba(99,102,241,0.12)', borderRadius: 14,
+          border: '1px solid rgba(255,255,255,0.08)', color: '#94a3b8', marginBottom: 16,
         }}>
           Connect to Hermes to view live source status.
         </div>
@@ -113,7 +113,7 @@ export function SourcesPanel() {
       {/* Pending Verification Summary */}
       {pendingStats && pendingStats.by_source && Object.keys(pendingStats.by_source).length > 0 && (
         <div style={{
-          background: '#111118', border: '1px solid #f59e0b30', borderRadius: 10,
+          background: 'rgba(255,255,255,0.03)', border: '1px solid #f59e0b30', borderRadius: 10,
           padding: '14px 20px', marginBottom: 16,
         }}>
           <div style={{ color: '#f59e0b', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
@@ -154,6 +154,9 @@ export function SourcesPanel() {
 
       {/* Court Records */}
       <CourtRecordsSection expanded={expanded === 'court-records'} onToggle={() => toggle('court-records')} />
+
+      {/* Zillow FSBO */}
+      <ZillowFsboSection expanded={expanded === 'zillow-fsbo'} onToggle={() => toggle('zillow-fsbo')} />
     </div>
   )
 }
@@ -185,7 +188,7 @@ function SourceCardHeader({
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ color: '#e0e0e0', fontSize: 16, fontWeight: 700 }}>{title}</span>
+          <span style={{ color: '#e2e8f0', fontSize: 16, fontWeight: 700 }}>{title}</span>
           {badges.map((b) => (
             <span key={b.label} style={{
               padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 600,
@@ -197,10 +200,10 @@ function SourceCardHeader({
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           {statsRow}
-          <span style={{ color: '#444', fontSize: 12, marginLeft: 4 }}>{expanded ? '▲' : '▼'}</span>
+          <span style={{ color: '#334155', fontSize: 12, marginLeft: 4 }}>{expanded ? '▲' : '▼'}</span>
         </div>
       </div>
-      <div style={{ fontSize: 12, color: '#666' }}>{description}</div>
+      <div style={{ fontSize: 12, color: '#64748b' }}>{description}</div>
     </div>
   )
 }
@@ -221,10 +224,10 @@ function BackgroundJobsPanel() {
 
   return (
     <div style={{
-      background: '#0d0d14', border: '1px solid #1e1e2e', borderRadius: 10,
+      background: '#0d0d14', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10,
       padding: 16, marginBottom: 16,
     }}>
-      <div style={{ color: '#e0e0e0', fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
+      <div style={{ color: '#e2e8f0', fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
         Background Jobs
       </div>
       {activeJobs.map((job: any) => (
@@ -232,11 +235,11 @@ function BackgroundJobsPanel() {
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
             <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#22c55e', animation: 'pulse 1.5s infinite' }} />
             <span style={{ color: '#22c55e', fontSize: 12, fontWeight: 600 }}>{job.job_type}</span>
-            <span style={{ color: '#555', fontSize: 11 }}>{job.phase}</span>
+            <span style={{ color: '#475569', fontSize: 11 }}>{job.phase}</span>
           </div>
           <div style={{
             background: '#0a0a10', borderRadius: 6, padding: '8px 12px',
-            maxHeight: 150, overflowY: 'auto', fontFamily: 'monospace', fontSize: 11, color: '#888',
+            maxHeight: 150, overflowY: 'auto', fontFamily: 'monospace', fontSize: 11, color: '#94a3b8',
           }}>
             {(() => {
               try {
@@ -251,7 +254,7 @@ function BackgroundJobsPanel() {
       ))}
       {recentJobs.map((job: any) => (
         <div key={job.job_id} style={{
-          display: 'flex', gap: 8, alignItems: 'center', fontSize: 11, color: '#555', marginBottom: 4,
+          display: 'flex', gap: 8, alignItems: 'center', fontSize: 11, color: '#475569', marginBottom: 4,
         }}>
           <span style={{
             width: 8, height: 8, borderRadius: '50%',
@@ -280,7 +283,7 @@ function WaterShutoffSection({ expanded, onToggle }: { expanded: boolean; onTogg
 
   return (
     <div style={{
-      background: '#111118', border: `1px solid ${expanded ? '#6366f140' : '#1e1e2e'}`,
+      background: 'rgba(255,255,255,0.03)', border: `1px solid ${expanded ? '#6366f140' : 'rgba(255,255,255,0.06)'}`,
       borderRadius: 10, padding: 20, marginBottom: 16,
       transition: 'border-color 0.15s',
     }}>
@@ -302,12 +305,12 @@ function WaterShutoffSection({ expanded, onToggle }: { expanded: boolean; onTogg
         onToggle={onToggle}
       />
       {!expanded && hasData && (
-        <div style={{ fontSize: 11, color: '#444', marginTop: 6 }}>
+        <div style={{ fontSize: 11, color: '#334155', marginTop: 6 }}>
           {stats.total_requests} FOIA requests tracked, {stats.ingested_records} leads ingested
         </div>
       )}
       {expanded && (
-        <div style={{ marginTop: 16, borderTop: '1px solid #1e1e2e', paddingTop: 16 }}>
+        <div style={{ marginTop: 16, borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 16 }}>
           <WaterShutoffPanel />
         </div>
       )}
@@ -328,7 +331,7 @@ function CountiesSection({ expanded, onToggle }: { expanded: boolean; onToggle: 
 
   return (
     <div style={{
-      background: '#111118', border: `1px solid ${expanded ? '#6366f140' : '#1e1e2e'}`,
+      background: 'rgba(255,255,255,0.03)', border: `1px solid ${expanded ? '#6366f140' : 'rgba(255,255,255,0.06)'}`,
       borderRadius: 10, padding: 20, marginBottom: 16,
       transition: 'border-color 0.15s',
     }}>
@@ -368,7 +371,7 @@ function CourtRecordsSection({ expanded, onToggle }: { expanded: boolean; onTogg
 
   return (
     <div style={{
-      background: '#111118', border: `1px solid ${expanded ? '#6366f140' : '#1e1e2e'}`,
+      background: 'rgba(255,255,255,0.03)', border: `1px solid ${expanded ? '#6366f140' : 'rgba(255,255,255,0.06)'}`,
       borderRadius: 10, padding: 20, marginBottom: 16,
       transition: 'border-color 0.15s',
     }}>
@@ -390,12 +393,12 @@ function CourtRecordsSection({ expanded, onToggle }: { expanded: boolean; onTogg
         onToggle={onToggle}
       />
       {!expanded && hasData && (
-        <div style={{ fontSize: 11, color: '#444', marginTop: 6 }}>
+        <div style={{ fontSize: 11, color: '#334155', marginTop: 6 }}>
           {stats.total_cases} cases across {stats.active_counties} active {stats.active_counties === 1 ? 'county' : 'counties'}
         </div>
       )}
       {expanded && (
-        <div style={{ marginTop: 16, borderTop: '1px solid #1e1e2e', paddingTop: 16 }}>
+        <div style={{ marginTop: 16, borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 16 }}>
           <CourtRecordsPanel />
         </div>
       )}
@@ -419,11 +422,11 @@ function PropStreamCard({ sources }: { sources: { source_id: string; source_name
 
   return (
     <div style={{
-      background: '#111118', border: '1px solid #1e1e2e', borderRadius: 10, padding: 20, marginBottom: 16,
+      background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: 20, marginBottom: 16,
     }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ color: '#e0e0e0', fontSize: 16, fontWeight: 700 }}>PropStream</span>
+          <span style={{ color: '#e2e8f0', fontSize: 16, fontWeight: 700 }}>PropStream</span>
           <span style={{
             padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 600,
             color: '#22c55e', background: '#22c55e20',
@@ -431,7 +434,7 @@ function PropStreamCard({ sources }: { sources: { source_id: string; source_name
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           {ps?.last_run_at && (
-            <span style={{ fontSize: 11, color: '#555' }}>
+            <span style={{ fontSize: 11, color: '#475569' }}>
               {new Date(ps.last_run_at).toLocaleDateString()} &middot; {ps.last_run_count?.toLocaleString() ?? 0} leads
             </span>
           )}
@@ -441,15 +444,15 @@ function PropStreamCard({ sources }: { sources: { source_id: string; source_name
           }} />
         </div>
       </div>
-      <div style={{ fontSize: 12, color: '#666', marginBottom: 12 }}>
+      <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>
         Tax delinquency, foreclosure, probate filters &middot; Browser bridge automation
       </div>
       <button
         onClick={() => runSource.mutate()}
         disabled={runSource.isPending || !ps}
         style={{
-          padding: '7px 14px', borderRadius: 5, border: '1px solid #2a2a3e',
-          background: '#1a1a2e', color: '#aaa', fontSize: 12, cursor: 'pointer',
+          padding: '7px 14px', borderRadius: 5, border: '1px solid rgba(255,255,255,0.08)',
+          background: 'rgba(99,102,241,0.12)', color: '#aaa', fontSize: 12, cursor: 'pointer',
         }}
       >
         {runSource.isPending ? 'Running...' : 'Run PropStream Scan'}
@@ -457,7 +460,7 @@ function PropStreamCard({ sources }: { sources: { source_id: string; source_name
       {runSource.isError && (
         <div style={{
           padding: '8px 14px', borderRadius: 6, marginTop: 10,
-          background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
+          background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.15)', color: '#ef4444', fontSize: 12,
         }}>
           Scan failed: {runSource.error instanceof Error ? runSource.error.message : String(runSource.error)}
         </div>
@@ -502,11 +505,11 @@ function CodeViolationsCard() {
 
   return (
     <div style={{
-      background: '#111118', border: '1px solid #1e1e2e', borderRadius: 10, padding: 20, marginBottom: 16,
+      background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: 20, marginBottom: 16,
     }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ color: '#e0e0e0', fontSize: 16, fontWeight: 700 }}>Code Violations</span>
+          <span style={{ color: '#e2e8f0', fontSize: 16, fontWeight: 700 }}>Code Violations</span>
           <span style={{
             padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 600,
             color: '#eab308', background: '#eab30820',
@@ -517,7 +520,7 @@ function CodeViolationsCard() {
           }}>AUTONOMOUS</span>
         </div>
       </div>
-      <div style={{ fontSize: 12, color: '#666', marginBottom: 14 }}>
+      <div style={{ fontSize: 12, color: '#64748b', marginBottom: 14 }}>
         Public API scraping &middot; {PORTALS.length} city portals &middot; Socrata + ArcGIS
       </div>
 
@@ -529,12 +532,12 @@ function CodeViolationsCard() {
           return (
             <div key={p.id} style={{
               padding: '8px 12px', background: '#0d0d14', borderRadius: 6,
-              border: `1px solid ${portalOk ? '#22c55e30' : '#1a1a2e'}`,
+              border: `1px solid ${portalOk ? '#22c55e30' : 'rgba(99,102,241,0.12)'}`,
               display: 'flex', justifyContent: 'space-between', alignItems: 'center',
             }}>
               <div>
-                <div style={{ color: '#ccc', fontSize: 12, fontWeight: 500 }}>{p.name}</div>
-                <div style={{ color: '#444', fontSize: 10 }}>{p.type}</div>
+                <div style={{ color: '#cbd5e1', fontSize: 12, fontWeight: 500 }}>{p.name}</div>
+                <div style={{ color: '#334155', fontSize: 10 }}>{p.type}</div>
               </div>
               {detail && (
                 <span style={{
@@ -611,10 +614,10 @@ function CodeViolationsCard() {
             <div>
               <div style={{ color: '#a78bfa', fontSize: 13 }}>
                 <span style={{ fontWeight: 600 }}>{skipTraceResult.queued} leads</span> across {skipTraceResult.zip_groups ?? '?'} zip codes queued for harvest
-                {skipTraceResult.queued === 0 && <span style={{ color: '#666' }}> — all leads already have phones</span>}
+                {skipTraceResult.queued === 0 && <span style={{ color: '#64748b' }}> — all leads already have phones</span>}
               </div>
               {skipTraceResult.queued > 0 && (
-                <div style={{ color: '#666', fontSize: 11, marginTop: 4 }}>
+                <div style={{ color: '#64748b', fontSize: 11, marginTop: 4 }}>
                   Each zip runs: SEARCH → SAVE → SKIP TRACE → EXPORT. PropStream runner must be active.
                 </div>
               )}
@@ -623,6 +626,175 @@ function CodeViolationsCard() {
             <span style={{ color: '#ef4444', fontSize: 12 }}>
               Skip trace error: {skipTraceResult.message}
             </span>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ── Zillow FSBO ──────────────────────────────────────────── */
+
+const FSBO_MARKETS = [
+  { id: 'cleveland-oh', name: 'Cleveland, OH' },
+  { id: 'columbus-oh', name: 'Columbus, OH' },
+  { id: 'cincinnati-oh', name: 'Cincinnati, OH' },
+  { id: 'detroit-mi', name: 'Detroit, MI' },
+  { id: 'chicago-il', name: 'Chicago, IL' },
+  { id: 'atlanta-ga', name: 'Atlanta, GA' },
+  { id: 'houston-tx', name: 'Houston, TX' },
+  { id: 'dallas-tx', name: 'Dallas, TX' },
+  { id: 'baltimore-md', name: 'Baltimore, MD' },
+  { id: 'memphis-tn', name: 'Memphis, TN' },
+  { id: 'indianapolis-in', name: 'Indianapolis, IN' },
+  { id: 'st-louis-mo', name: 'St. Louis, MO' },
+  { id: 'milwaukee-wi', name: 'Milwaukee, WI' },
+  { id: 'pittsburgh-pa', name: 'Pittsburgh, PA' },
+  { id: 'buffalo-ny', name: 'Buffalo, NY' },
+]
+
+function ZillowFsboSection({ expanded, onToggle }: { expanded: boolean; onToggle: () => void }) {
+  const queryClient = useQueryClient()
+  const [selectedMarkets, setSelectedMarkets] = useState<Set<string>>(new Set(['cleveland-oh']))
+  const logEndRef = { current: null as HTMLDivElement | null }
+
+  const { data: status } = useQuery({
+    queryKey: ['zillow-fsbo-status'],
+    queryFn: hermesClient.sources.zillowFsboStatus,
+    refetchInterval: 2000,
+  })
+
+  const scrape = useMutation({
+    mutationFn: () => hermesClient.sources.scrapeZillowFsbo({
+      markets: [...selectedMarkets],
+      max_pages: 3,
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['zillow-fsbo-status'] })
+    },
+  })
+
+  const running = status?.running || false
+
+  function toggleMarket(id: string) {
+    setSelectedMarkets((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  return (
+    <div style={{
+      background: 'rgba(255,255,255,0.03)', border: `1px solid ${expanded ? '#6366f140' : 'rgba(255,255,255,0.06)'}`,
+      borderRadius: 10, padding: 20, marginBottom: 16,
+      transition: 'border-color 0.15s',
+    }}>
+      <SourceCardHeader
+        title="Zillow FSBO (For Sale By Owner)"
+        badges={[
+          { label: 'PARTIAL', color: '#f59e0b' },
+          { label: 'AUTONOMOUS', color: '#22c55e' },
+        ]}
+        description="Scrapes Zillow for FSBO listings — motivated sellers avoiding realtors. Playwright visible browser."
+        expanded={expanded}
+        onToggle={onToggle}
+      />
+
+      {!expanded && status?.result && (
+        <div style={{ fontSize: 11, color: '#334155', marginTop: 6 }}>
+          Last run: {status.result.created} created, {status.result.updated} updated
+        </div>
+      )}
+
+      {expanded && (
+        <div style={{ marginTop: 16, borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 16 }}>
+          {/* Market selector */}
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 11, color: '#475569', textTransform: 'uppercase', marginBottom: 8 }}>
+              Target Markets
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {FSBO_MARKETS.map((m) => (
+                <button
+                  key={m.id}
+                  onClick={() => toggleMarket(m.id)}
+                  disabled={running}
+                  style={{
+                    padding: '5px 12px', borderRadius: 6, fontSize: 11, fontWeight: 500,
+                    cursor: running ? 'default' : 'pointer',
+                    background: selectedMarkets.has(m.id) ? '#22c55e18' : 'rgba(255,255,255,0.03)',
+                    color: selectedMarkets.has(m.id) ? '#22c55e' : '#64748b',
+                    border: `1px solid ${selectedMarkets.has(m.id) ? '#22c55e40' : 'rgba(255,255,255,0.06)'}`,
+                  }}
+                >
+                  {m.name}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Scrape button */}
+          <button
+            onClick={() => scrape.mutate()}
+            disabled={running || selectedMarkets.size === 0}
+            style={{
+              padding: '10px 24px', borderRadius: 6, border: 'none',
+              background: running ? '#333' : selectedMarkets.size > 0 ? '#22c55e' : '#222',
+              color: '#fff', fontWeight: 700, fontSize: 13,
+              cursor: running || selectedMarkets.size === 0 ? 'default' : 'pointer',
+              marginBottom: 16,
+            }}
+          >
+            {running ? 'Scraping...' : `Scrape ${selectedMarkets.size} Market${selectedMarkets.size !== 1 ? 's' : ''}`}
+          </button>
+
+          {scrape.isError && (
+            <div style={{
+              padding: '8px 14px', borderRadius: 6, marginBottom: 12,
+              background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
+            }}>
+              {scrape.error instanceof Error ? scrape.error.message : String(scrape.error)}
+            </div>
+          )}
+
+          {/* Live log */}
+          {status && status.log.length > 0 && (
+            <div className={`log-tablet${running ? ' active' : status.error ? ' error' : status.result ? ' complete' : ''}`}>
+              {status.log.map((line, i) => (
+                <div key={i} style={{
+                  color: line.includes('ERROR') || line.includes('FATAL') ? '#ef4444'
+                    : line.includes('Created') || line.includes('Stacked') ? '#22c55e'
+                    : line.includes('zillow-fsbo') ? '#6366f1'
+                    : '#888',
+                }}>
+                  {line}
+                </div>
+              ))}
+              <div ref={(el) => { logEndRef.current = el; el?.scrollIntoView({ behavior: 'smooth' }) }} />
+            </div>
+          )}
+
+          {/* Results */}
+          {status?.result && !running && (
+            <div style={{
+              marginTop: 12, padding: '10px 14px', borderRadius: 6,
+              background: '#0d2818', border: '1px solid #22c55e30',
+              fontSize: 12, color: '#22c55e',
+            }}>
+              Done: {status.result.created} new leads, {status.result.updated} updated with stacked signals, {status.result.skipped} skipped
+            </div>
+          )}
+
+          {status?.error && !running && (
+            <div style={{
+              marginTop: 12, padding: '10px 14px', borderRadius: 6,
+              background: '#1f0f0f', border: '1px solid #3a1a1a',
+              fontSize: 12, color: '#ef4444',
+            }}>
+              {status.error}
+            </div>
           )}
         </div>
       )}

@@ -97,6 +97,13 @@ def build_parser() -> argparse.ArgumentParser:
     discord_command_parser.add_argument("--thread-id")
     discord_command_parser.add_argument("--message-id")
 
+    proxy_parser = subparsers.add_parser(
+        "claude-proxy",
+        help="Run the Claude CLI proxy server (wraps `claude -p` as HTTP API)",
+    )
+    proxy_parser.add_argument("--host", default="127.0.0.1")
+    proxy_parser.add_argument("--port", type=int, default=8766)
+
     return parser
 
 
@@ -175,6 +182,11 @@ def main(argv: list[str] | None = None) -> int:
         static_dir = Path(args.static_dir) if args.static_dir else None
         runtime = HermesRuntime(Path(args.root), static_dir=static_dir)
         runtime.serve_forever(host=args.host, port=args.port)
+        return 0
+    elif args.command == "claude-proxy":
+        from .claude_proxy import run as run_proxy
+
+        run_proxy(host=args.host, port=args.port)
         return 0
     else:
         parser.error(f"Unsupported command {args.command}")

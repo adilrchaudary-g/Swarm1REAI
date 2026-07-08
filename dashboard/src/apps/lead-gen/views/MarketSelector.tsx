@@ -105,8 +105,8 @@ export function MarketSelector() {
     <div>
       {/* Header */}
       <div style={{ marginBottom: 20 }}>
-        <h2 style={{ color: '#e0e0e0', fontSize: 20, margin: '0 0 6px' }}>Market Intelligence</h2>
-        <p style={{ color: '#666', fontSize: 13, margin: 0 }}>
+        <h2 style={{ color: '#e2e8f0', fontSize: 20, margin: '0 0 6px' }}>Market Intelligence</h2>
+        <p style={{ color: '#64748b', fontSize: 13, margin: 0 }}>
           Nationwide market ranking — {s?.scouted ?? 0} of {s?.eligible ?? 0} eligible counties scouted via PropStream.
           Ranked by distress density, price sweet spot, and population.
         </p>
@@ -135,10 +135,10 @@ export function MarketSelector() {
       {/* Progress bar */}
       {s && s.eligible > 0 && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
-          <div style={{ flex: 1, height: 6, background: '#1a1a2e', borderRadius: 3, overflow: 'hidden' }}>
+          <div style={{ flex: 1, height: 6, background: 'rgba(99,102,241,0.12)', borderRadius: 3, overflow: 'hidden' }}>
             <div style={{ width: `${Math.round(((s.scouted || 0) / s.eligible) * 100)}%`, height: '100%', background: '#22c55e', borderRadius: 3, transition: 'width 0.3s' }} />
           </div>
-          <span style={{ fontSize: 11, color: '#666', whiteSpace: 'nowrap' }}>
+          <span style={{ fontSize: 11, color: '#64748b', whiteSpace: 'nowrap' }}>
             {Math.round(((s.scouted || 0) / s.eligible) * 100)}% coverage
           </span>
         </div>
@@ -164,7 +164,7 @@ export function MarketSelector() {
 
       {/* Filters & Sort */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-        <span style={{ fontSize: 11, color: '#666' }}>Sort:</span>
+        <span style={{ fontSize: 11, color: '#64748b' }}>Sort:</span>
         {([
           { key: 'score' as const, label: 'Score' },
           { key: 'total_distressed' as const, label: 'Distressed' },
@@ -173,11 +173,11 @@ export function MarketSelector() {
         ]).map((s) => (
           <TabBtn key={s.key} active={sortBy === s.key} onClick={() => setSortBy(s.key)}>{s.label}</TabBtn>
         ))}
-        <span style={{ fontSize: 11, color: '#666', marginLeft: 12 }}>State:</span>
+        <span style={{ fontSize: 11, color: '#64748b', marginLeft: 12 }}>State:</span>
         <select
           value={stateFilter}
           onChange={(e) => setStateFilter(e.target.value)}
-          style={{ background: '#1a1a2e', color: '#ccc', border: '1px solid #2a2a3e', borderRadius: 4, padding: '4px 8px', fontSize: 11 }}
+          style={{ background: 'rgba(99,102,241,0.12)', color: '#cbd5e1', border: '1px solid #2a2a3e', borderRadius: 4, padding: '4px 8px', fontSize: 11 }}
         >
           <option value="">All ({counties.length})</option>
           {uniqueStates.map(st => (
@@ -192,7 +192,7 @@ export function MarketSelector() {
       </div>
 
       {/* County table */}
-      <div style={{ borderRadius: 8, border: '1px solid #1e1e2e', overflow: 'hidden' }}>
+      <div style={{ borderRadius: 14, border: '1px solid #1e1e2e', overflow: 'hidden' }}>
         <div style={{
           display: 'grid',
           gridTemplateColumns: '36px 1.6fr 0.5fr 0.5fr 0.6fr 0.7fr 0.7fr 0.7fr 0.7fr 0.6fr 0.7fr',
@@ -202,7 +202,7 @@ export function MarketSelector() {
         }}>
           {['#', 'County', 'State', 'Tier', 'Score', 'Median', 'Pop.', 'PreFC', 'Tax Del.', 'Probate', 'Total'].map((h) => (
             <span key={h} style={{
-              fontSize: 10, color: '#555', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5,
+              fontSize: 10, color: '#475569', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5,
               textAlign: ['#', 'County', 'State', 'Tier'].includes(h) ? 'left' : 'right',
             }}>{h}</span>
           ))}
@@ -217,12 +217,12 @@ export function MarketSelector() {
               gridTemplateColumns: '36px 1.6fr 0.5fr 0.5fr 0.6fr 0.7fr 0.7fr 0.7fr 0.7fr 0.6fr 0.7fr',
               alignItems: 'center',
               padding: '10px 12px',
-              background: i % 2 === 0 ? '#111118' : '#0d0d14',
+              background: i % 2 === 0 ? 'rgba(255,255,255,0.03)' : '#0d0d14',
               borderBottom: '1px solid #1a1a2e',
             }}>
-              <span style={{ color: '#555', fontSize: 12, fontWeight: 600 }}>{i + 1}</span>
+              <span style={{ color: '#475569', fontSize: 12, fontWeight: 600 }}>{i + 1}</span>
               <div>
-                <span style={{ color: '#e0e0e0', fontSize: 12, fontWeight: 600 }}>{c.county}</span>
+                <span style={{ color: '#e2e8f0', fontSize: 12, fontWeight: 600 }}>{c.county}</span>
                 {c.last_harvested_at && <span style={{ marginLeft: 4, fontSize: 8, color: '#f59e0b', background: '#f59e0b20', padding: '1px 4px', borderRadius: 2 }}>HARVESTED</span>}
               </div>
               <span style={{ color: '#999', fontSize: 12 }}>{c.state}</span>
@@ -237,21 +237,21 @@ export function MarketSelector() {
                   {score}
                 </span>
               </div>
-              <span style={{ color: '#ccc', fontSize: 11, textAlign: 'right' }}>
+              <span style={{ color: '#cbd5e1', fontSize: 11, textAlign: 'right' }}>
                 {c.median_home_value ? `$${fmt(c.median_home_value)}` : '–'}
               </span>
-              <span style={{ color: '#ccc', fontSize: 11, textAlign: 'right' }}>{fmt(c.population)}</span>
-              <span style={{ color: (c.pre_foreclosure_count ?? 0) > 1000 ? '#f97316' : '#888', fontSize: 11, textAlign: 'right', fontWeight: (c.pre_foreclosure_count ?? 0) > 1000 ? 600 : 400 }}>
+              <span style={{ color: '#cbd5e1', fontSize: 11, textAlign: 'right' }}>{fmt(c.population)}</span>
+              <span style={{ color: (c.pre_foreclosure_count ?? 0) > 1000 ? '#f97316' : '#94a3b8', fontSize: 11, textAlign: 'right', fontWeight: (c.pre_foreclosure_count ?? 0) > 1000 ? 600 : 400 }}>
                 {c.pre_foreclosure_count != null ? fmt(c.pre_foreclosure_count) : '–'}
               </span>
-              <span style={{ color: (c.tax_delinquent_count ?? 0) > 1000 ? '#eab308' : '#888', fontSize: 11, textAlign: 'right', fontWeight: (c.tax_delinquent_count ?? 0) > 1000 ? 600 : 400 }}>
+              <span style={{ color: (c.tax_delinquent_count ?? 0) > 1000 ? '#eab308' : '#94a3b8', fontSize: 11, textAlign: 'right', fontWeight: (c.tax_delinquent_count ?? 0) > 1000 ? 600 : 400 }}>
                 {c.tax_delinquent_count != null ? fmt(c.tax_delinquent_count) : '–'}
               </span>
-              <span style={{ color: (c.probate_count ?? 0) > 500 ? '#8b5cf6' : '#888', fontSize: 11, textAlign: 'right', fontWeight: (c.probate_count ?? 0) > 500 ? 600 : 400 }}>
+              <span style={{ color: (c.probate_count ?? 0) > 500 ? '#8b5cf6' : '#94a3b8', fontSize: 11, textAlign: 'right', fontWeight: (c.probate_count ?? 0) > 500 ? 600 : 400 }}>
                 {c.probate_count != null ? fmt(c.probate_count) : '–'}
               </span>
               <span style={{
-                color: (c.total_distressed ?? 0) > 10000 ? '#22c55e' : '#ccc',
+                color: (c.total_distressed ?? 0) > 10000 ? '#22c55e' : '#cbd5e1',
                 fontSize: 11, fontWeight: (c.total_distressed ?? 0) > 10000 ? 700 : 400, textAlign: 'right',
               }}>
                 {c.total_distressed != null ? fmt(c.total_distressed) : '–'}
@@ -260,27 +260,27 @@ export function MarketSelector() {
           )
         })}
         {!sorted.length && (
-          <div style={{ padding: 32, textAlign: 'center', color: '#666', fontSize: 13 }}>
+          <div style={{ padding: 32, textAlign: 'center', color: '#64748b', fontSize: 13 }}>
             {notSeeded ? 'Click "Seed 3,143 Counties" to load Census data and start scouting.' : counties.length === 0 ? 'No scouted counties yet. Click "Scout Next 50" to begin.' : 'No counties match current filter.'}
           </div>
         )}
       </div>
 
       {/* Blocked states notice */}
-      <div style={{ marginTop: 16, padding: 12, background: '#1a1a2e', borderRadius: 8, border: '1px solid #2a2a3e' }}>
+      <div style={{ marginTop: 16, padding: 12, background: 'rgba(99,102,241,0.12)', borderRadius: 14, border: '1px solid #2a2a3e' }}>
         <div style={{ fontSize: 11, fontWeight: 600, color: '#ef4444', marginBottom: 4 }}>Blocked States (9)</div>
-        <div style={{ fontSize: 11, color: '#666' }}>
+        <div style={{ fontSize: 11, color: '#64748b' }}>
           SC, IL, OK, KY, PA, VA, NC, NE, NY — wholesaling effectively banned, all leads auto-rejected.
         </div>
         <div style={{ fontSize: 11, fontWeight: 600, color: '#f59e0b', marginTop: 8, marginBottom: 4 }}>High-Friction States (12)</div>
-        <div style={{ fontSize: 11, color: '#666' }}>
+        <div style={{ fontSize: 11, color: '#64748b' }}>
           CT, OR, MD, AZ, CA, IA, TN, IN, WI, ND, AL, OH — workable with care, -10 score penalty applied.
         </div>
       </div>
 
       {/* Legend */}
       <div style={{ marginTop: 12, display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center' }}>
-        <span style={{ fontSize: 10, color: '#444' }}>
+        <span style={{ fontSize: 10, color: '#334155' }}>
           Score = distress density (35) + price sweet spot (25) + population (15) + signal diversity (9) - friction (10)
         </span>
       </div>
@@ -291,14 +291,14 @@ export function MarketSelector() {
 function TierCard({ tier, count, color, desc, active, onClick }: { tier: string; count: number; color: string; desc: string; active: boolean; onClick: () => void }) {
   return (
     <button onClick={onClick} style={{
-      flex: 1, background: active ? color + '15' : '#111118', border: `1px solid ${active ? color : '#1e1e2e'}`,
-      borderRadius: 8, padding: '12px 16px', cursor: 'pointer', textAlign: 'left', transition: 'all 0.15s',
+      flex: 1, background: active ? color + '15' : 'rgba(255,255,255,0.03)', border: `1px solid ${active ? color : 'rgba(255,255,255,0.06)'}`,
+      borderRadius: 14, padding: '12px 16px', cursor: 'pointer', textAlign: 'left', transition: 'all 0.15s',
     }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <span style={{ fontSize: 11, fontWeight: 700, color, letterSpacing: 0.5 }}>{tier}</span>
         <span style={{ fontSize: 20, fontWeight: 700, color }}>{count}</span>
       </div>
-      <div style={{ fontSize: 10, color: '#666', marginTop: 2 }}>{desc}</div>
+      <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>{desc}</div>
     </button>
   )
 }
@@ -307,10 +307,10 @@ function LogPanel({ lines, phase }: { lines: string[]; phase: string }) {
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => { ref.current?.scrollTo(0, ref.current.scrollHeight) }, [lines.length])
   return (
-    <div style={{ background: '#0a0a14', border: '1px solid #2a2a3e', borderRadius: 8, padding: 12, marginBottom: 16 }}>
+    <div style={{ background: '#0a0a14', border: '1px solid #2a2a3e', borderRadius: 14, padding: 12, marginBottom: 16 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
         <span style={{ fontSize: 11, color: '#22c55e', fontWeight: 600 }}>Scout Pipeline</span>
-        <span style={{ fontSize: 10, color: '#666' }}>{phase}</span>
+        <span style={{ fontSize: 10, color: '#64748b' }}>{phase}</span>
       </div>
       <div ref={ref} style={{ maxHeight: 200, overflow: 'auto', fontFamily: 'monospace', fontSize: 11, color: '#94a3b8' }}>
         {lines.map((line, i) => <div key={i} style={{ padding: '1px 0' }}>{line}</div>)}
@@ -321,10 +321,10 @@ function LogPanel({ lines, phase }: { lines: string[]; phase: string }) {
 
 function SummaryCard({ label, value, color, sub }: { label: string; value: string | number; color: string; sub?: string }) {
   return (
-    <div style={{ background: '#111118', border: '1px solid #1e1e2e', borderRadius: 8, padding: '12px 14px' }}>
-      <div style={{ fontSize: 10, color: '#666', marginBottom: 4 }}>{label}</div>
+    <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid #1e1e2e', borderRadius: 14, padding: '12px 14px' }}>
+      <div style={{ fontSize: 10, color: '#64748b', marginBottom: 4 }}>{label}</div>
       <div style={{ fontSize: 22, fontWeight: 700, color }}>{typeof value === 'number' ? value.toLocaleString() : value}</div>
-      {sub && <div style={{ fontSize: 10, color: '#555', marginTop: 2 }}>{sub}</div>}
+      {sub && <div style={{ fontSize: 10, color: '#475569', marginTop: 2 }}>{sub}</div>}
     </div>
   )
 }
@@ -333,9 +333,9 @@ function TabBtn({ active, onClick, children }: { active: boolean; onClick: () =>
   return (
     <button onClick={onClick} style={{
       padding: '4px 12px', borderRadius: 5, fontSize: 11, cursor: 'pointer',
-      border: `1px solid ${active ? '#6366f1' : '#2a2a3e'}`,
+      border: `1px solid ${active ? '#6366f1' : 'rgba(255,255,255,0.08)'}`,
       background: active ? '#6366f120' : 'transparent',
-      color: active ? '#818cf8' : '#666',
+      color: active ? '#818cf8' : '#64748b',
     }}>{children}</button>
   )
 }

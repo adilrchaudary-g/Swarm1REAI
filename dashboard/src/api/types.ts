@@ -446,23 +446,33 @@ export interface DistressedProperty {
 export type CallScore = 'Strong' | 'Average' | 'Needs Work'
 export type SellerSentiment = 'Hot' | 'Warm' | 'Cold' | 'Dead'
 
-export interface MyPerformanceGrade {
-  controlled_conversation: string
-  uncovered_motivation: string
-  handled_objections: string
-  momentum_loss: string
-  score: number
+export interface BattleScore {
+  objection_handling: number
+  objection_notes: string
+  conversation_control: number
+  control_notes: string
+  kept_on_phone: number
+  phone_notes: string
+  stayed_grounded: number
+  grounded_notes: string
+  overall: number
   summary: string
+  // Legacy compat
+  score?: number
 }
 
 export interface SellerMotivationGrade {
   core_reason: string
   motivation_level: number
-  emotional_or_logical: string
-  timeline: string
   overall_sentiment: SellerSentiment
   summary: string
+  // Legacy fields
+  emotional_or_logical?: string
+  timeline?: string
 }
+
+/** @deprecated Use BattleScore */
+export type MyPerformanceGrade = BattleScore
 
 export interface CallRecording {
   id: number
@@ -479,6 +489,7 @@ export interface CallRecording {
   next_action: string | null
   next_action_due: string | null
   notes: string | null
+  lead_id: string | null
   created_at: string
   updated_at: string
 }
@@ -550,11 +561,14 @@ export interface ConversionFunnel {
 }
 
 export interface CallMetrics {
-  calls_made: number
-  contacted: number
+  total_dials: number
+  unique_leads_called: number
+  pickups: number
   interested: number
   voicemails: number
-  contact_rate: number
+  no_answers: number
+  bad_numbers: number
+  pickup_rate: number
   interest_rate: number
   days_back: number
 }
@@ -575,4 +589,157 @@ export interface SourceRoi {
   interested: number
   in_underwriting: number
   closed_won: number
+}
+
+export interface TrackerKpis {
+  calls_today: number
+  real_convos_today: number
+  voicemails_today: number
+  bad_numbers_today: number
+  pickup_rate: number
+  real_leads_week: number
+  calls_week: number
+  disposition_breakdown: Record<string, number>
+  history: TrackerDayPoint[]
+}
+
+export interface TrackerDayPoint {
+  day: string
+  calls: number
+  convos: number
+  leads: number
+}
+
+export interface DialStreak {
+  current_streak: number
+  best_streak: number
+  total_active_days: number
+  last_dial_date: string | null
+}
+
+// ── Contracts ───────────────────────────────────────────────
+
+export type ContractStatus = 'draft' | 'pending_seller' | 'fully_signed' | 'voided' | 'expired'
+
+export interface Contract {
+  id: number
+  lead_id: string
+  contract_type: string
+  status: ContractStatus
+  contract_data_json: string
+  purchaser_name: string | null
+  purchaser_address: string | null
+  seller_name: string | null
+  seller_address: string | null
+  property_address: string | null
+  property_county: string | null
+  property_state: string | null
+  option_fee: number | null
+  purchase_price: number | null
+  amount_due_at_closing: number | null
+  option_term_end_date: string | null
+  closing_date: string | null
+  purchaser_signature: string | null
+  purchaser_signed_at: string | null
+  seller_signature: string | null
+  seller_signed_at: string | null
+  signing_token: string | null
+  signing_url: string | null
+  signing_email_sent_at: string | null
+  seller_email: string | null
+  pdf_path: string | null
+  signed_pdf_path: string | null
+  created_at: string
+  updated_at: string
+  // joined
+  address_full?: string
+  owner_name?: string
+}
+
+export interface ContractData {
+  lead_id: string
+  contract_type?: string
+  purchaser_name: string
+  purchaser_address: string
+  seller_name: string
+  seller_address: string
+  property_address: string
+  property_county: string
+  property_state: string
+  option_fee: number
+  purchase_price: number
+  option_term_end_date: string
+  closing_date: string
+  seller_email?: string
+  contract_date_day?: string
+  contract_date_month?: string
+  contract_date_year?: string
+}
+
+export interface UserSettings {
+  purchaser_name?: string
+  purchaser_address?: string
+  gmail_user?: string
+  gmail_app_password?: string
+  [key: string]: string | undefined
+}
+
+// ── Agents ──────────────────────────────────────────────────
+
+export interface AgentDefinition {
+  agent_type: string
+  display_name: string
+  description: string | null
+  prompt_template: string | null
+  schedule: string
+  enabled: number
+  config_json: string
+  created_at: string
+  updated_at: string
+  last_run_id: string | null
+  last_run_status: string | null
+  last_run_at: string | null
+  running?: boolean
+}
+
+export interface AgentRun {
+  run_id: string
+  agent_type: string
+  status: string
+  phase: string
+  started_at: string
+  completed_at: string | null
+  leads_scanned: number
+  proposals_created: number
+  ai_calls_made: number
+  ai_available: number
+  log_lines_json: string
+  error: string | null
+  result_json: string | null
+}
+
+export type ProposalStatus = 'pending' | 'approved' | 'denied' | 'revised'
+
+export interface Proposal {
+  id: number
+  agent_type: string
+  run_id: string
+  title: string
+  description: string | null
+  payload_json: string
+  priority: string
+  status: ProposalStatus
+  revision_notes: string | null
+  resolved_at: string | null
+  created_at: string
+}
+
+export interface AgentProxyStatus {
+  scheduler_active: boolean
+  running_agents: Record<string, boolean>
+  proxy: {
+    available: boolean
+    queue_depth: number
+    total_calls: number
+  }
 }

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicklaus-dev/tauri-schema/main/tauri.conf.schema.json",
+  "productName": "SWARM",
+  "version": "0.1.0",
+  "identifier": "com.wholesaling-swarm.app",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "SWARM — Wholesale Ops",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600,
+        "decorations": true,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' http://localhost:8765 http://localhost:8766 http://127.0.0.1:8765 http://127.0.0.1:8766; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "plugins": {
+    "shell": {
+      "open": true
+    }
+  }
+}

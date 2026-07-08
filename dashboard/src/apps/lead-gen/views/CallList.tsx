@@ -1,9 +1,10 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { X } from 'lucide-react'
+import { X, FileSignature } from 'lucide-react'
 import { hermesClient } from '../../../api/hermes-client'
 import { useLeadStore } from '../../../store/lead-store'
 import { DialMode } from './DialMode'
+import { ContractWizard } from '../../contracts/ContractWizard'
 import type { Lead } from '../../../api/types'
 
 const TIER_COLORS: Record<string, string> = {
@@ -22,7 +23,7 @@ const STATUS_FILTERS = [
 ]
 
 const DISPOSITIONS = [
-  { status: 'contacted', label: 'No Answer', color: '#888' },
+  { status: 'contacted', label: 'No Answer', color: '#94a3b8' },
   { status: 'interested', label: 'Interested', color: '#22c55e' },
   { status: 'not_interested', label: 'Not Interested', color: '#ef4444' },
   { status: 'follow_up', label: 'Follow Up', color: '#eab308' },
@@ -54,8 +55,8 @@ function LeadRow({
     <tr
       style={{
         cursor: 'pointer',
-        borderBottom: '1px solid #1e1e2e',
-        background: isActive ? '#1a1a2e' : isSelected ? '#16163a' : 'transparent',
+        borderBottom: '1px solid rgba(255,255,255,0.06)',
+        background: isActive ? 'rgba(99,102,241,0.12)' : isSelected ? '#16163a' : 'transparent',
       }}
     >
       <td style={{ padding: '10px 8px', textAlign: 'center' }}>
@@ -66,10 +67,10 @@ function LeadRow({
           style={{ cursor: 'pointer', accentColor: '#6366f1' }}
         />
       </td>
-      <td onClick={() => setActiveLead(lead)} style={{ padding: '10px 12px', color: '#ccc', fontSize: 13 }}>{index + 1}</td>
-      <td onClick={() => setActiveLead(lead)} style={{ padding: '10px 12px', color: '#e0e0e0', fontSize: 13 }}>
+      <td onClick={() => setActiveLead(lead)} style={{ padding: '10px 12px', color: '#cbd5e1', fontSize: 13 }}>{index + 1}</td>
+      <td onClick={() => setActiveLead(lead)} style={{ padding: '10px 12px', color: '#e2e8f0', fontSize: 13 }}>
         {lead.address_street || lead.address_full || '—'}
-        <div style={{ fontSize: 11, color: '#666' }}>
+        <div style={{ fontSize: 11, color: '#64748b' }}>
           {[lead.address_city, lead.address_state, lead.address_zip].filter(Boolean).join(', ')}
         </div>
       </td>
@@ -91,7 +92,7 @@ function LeadRow({
           ? lead.callable_phones[0].phone_value
           : <span style={{ color: '#ef4444', fontSize: 11 }}>no phone</span>}
       </td>
-      <td onClick={() => setActiveLead(lead)} style={{ padding: '10px 12px', color: '#555', fontSize: 11 }}>{lead.source || '—'}</td>
+      <td onClick={() => setActiveLead(lead)} style={{ padding: '10px 12px', color: '#475569', fontSize: 11 }}>{lead.source || '—'}</td>
     </tr>
   )
 }
@@ -102,6 +103,7 @@ function DetailPanel({ lead }: { lead: Lead }) {
   const [note, setNote] = useState('')
   const [showFollowUp, setShowFollowUp] = useState(false)
   const [fuDate, setFuDate] = useState('')
+  const [showContractWizard, setShowContractWizard] = useState(false)
 
   const updateStatus = useMutation({
     mutationFn: ({ status, reason }: { status: string; reason?: string }) =>
@@ -132,8 +134,8 @@ function DetailPanel({ lead }: { lead: Lead }) {
   })
 
   const inputStyle = {
-    width: '100%', padding: '6px 8px', background: '#0a0a0f',
-    border: '1px solid #2a2a3e', borderRadius: 4, color: '#ccc', fontSize: 12,
+    width: '100%', padding: '6px 8px', background: 'rgba(0,0,0,0.3)',
+    border: '1px solid rgba(255,255,255,0.08)', borderRadius: 4, color: '#cbd5e1', fontSize: 12,
   }
 
   const canQueue = lead.status === 'new' || lead.status === 'enriched' || lead.status === 'scored'
@@ -142,25 +144,25 @@ function DetailPanel({ lead }: { lead: Lead }) {
 
   return (
     <div style={{
-      width: 380, background: '#111118', border: '1px solid #1e1e2e',
-      borderRadius: 8, padding: 20, position: 'sticky', top: 24,
+      width: 380, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)',
+      borderRadius: 14, padding: 20, position: 'sticky', top: 24,
       maxHeight: 'calc(100vh - 48px)', overflow: 'auto',
     }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
-        <h3 style={{ color: '#e0e0e0', fontSize: 16, margin: 0 }}>Lead Detail</h3>
+        <h3 style={{ color: '#e2e8f0', fontSize: 16, margin: 0 }}>Lead Detail</h3>
         <button
           onClick={() => setActiveLead(null)}
-          style={{ background: 'none', border: 'none', color: '#666', cursor: 'pointer', fontSize: 18 }}
+          style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: 18 }}
         ><X size={16} /></button>
       </div>
 
-      <p style={{ fontWeight: 600, color: '#e0e0e0', fontSize: 14, margin: '0 0 2px' }}>{lead.address_full}</p>
-      <p style={{ color: '#888', fontSize: 13, margin: '0 0 4px' }}>{lead.owner_name}</p>
-      <p style={{ fontSize: 11, color: '#555', margin: '0 0 16px' }}>Status: <span style={{ color: '#6366f1' }}>{lead.status}</span></p>
+      <p style={{ fontWeight: 600, color: '#e2e8f0', fontSize: 14, margin: '0 0 2px' }}>{lead.address_full}</p>
+      <p style={{ color: '#94a3b8', fontSize: 13, margin: '0 0 4px' }}>{lead.owner_name}</p>
+      <p style={{ fontSize: 11, color: '#475569', margin: '0 0 16px' }}>Status: <span style={{ color: '#6366f1' }}>{lead.status}</span></p>
 
       {/* Status transition buttons */}
       <div style={{ marginBottom: 16 }}>
-        <div style={{ fontSize: 10, color: '#555', textTransform: 'uppercase', marginBottom: 6 }}>Actions</div>
+        <div style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase', marginBottom: 6 }}>Actions</div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           {canQueue && (
             <button
@@ -183,8 +185,16 @@ function DetailPanel({ lead }: { lead: Lead }) {
               style={{ ...btnBase, color: '#ef4444', background: '#ef444418', opacity: updateStatus.isPending ? 0.5 : 1 }}
             >{updateStatus.isPending ? 'Archiving...' : 'Archive'}</button>
           )}
+          <button
+            onClick={() => setShowContractWizard(true)}
+            style={{ ...btnBase, color: '#a78bfa', background: '#a78bfa18', display: 'flex', alignItems: 'center', gap: 4 }}
+          ><FileSignature size={12} /> Generate Contract</button>
         </div>
       </div>
+
+      {showContractWizard && (
+        <ContractWizard lead={lead} onClose={() => setShowContractWizard(false)} />
+      )}
 
       {(updateStatus.isError || addNote.isError || scheduleFollowUp.isError) && (
         <div style={{ padding: '6px 10px', borderRadius: 4, marginBottom: 8, background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 11 }}>
@@ -196,7 +206,7 @@ function DetailPanel({ lead }: { lead: Lead }) {
 
       {/* Call disposition buttons */}
       <div style={{ marginBottom: 16 }}>
-        <div style={{ fontSize: 10, color: '#555', textTransform: 'uppercase', marginBottom: 6 }}>Call Result</div>
+        <div style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase', marginBottom: 6 }}>Call Result</div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           {DISPOSITIONS.map((d) => (
             <button
@@ -238,7 +248,7 @@ function DetailPanel({ lead }: { lead: Lead }) {
           Schedule Follow-Up
         </button>
       ) : (
-        <div style={{ marginBottom: 16, padding: 10, background: '#0a0a0f', borderRadius: 6, border: '1px solid #2a2a3e' }}>
+        <div style={{ marginBottom: 16, padding: 10, background: 'rgba(0,0,0,0.3)', borderRadius: 6, border: '1px solid rgba(255,255,255,0.08)' }}>
           <input
             type="date"
             value={fuDate}
@@ -253,7 +263,7 @@ function DetailPanel({ lead }: { lead: Lead }) {
             >Save</button>
             <button
               onClick={() => setShowFollowUp(false)}
-              style={{ ...btnBase, background: '#1e1e2e', color: '#888' }}
+              style={{ ...btnBase, background: 'rgba(255,255,255,0.06)', color: '#94a3b8' }}
             >Cancel</button>
           </div>
         </div>
@@ -272,7 +282,7 @@ function DetailPanel({ lead }: { lead: Lead }) {
       {/* Distress signals */}
       {lead.distress_signals.length > 0 && (
         <div style={{ marginBottom: 16 }}>
-          <div style={{ fontSize: 10, color: '#555', textTransform: 'uppercase', marginBottom: 4 }}>Distress Signals</div>
+          <div style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase', marginBottom: 4 }}>Distress Signals</div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
             {lead.distress_signals.map((sig) => (
               <span key={sig} style={{ padding: '2px 6px', borderRadius: 4, fontSize: 11, background: '#ef444420', color: '#ef4444' }}>{sig}</span>
@@ -283,11 +293,11 @@ function DetailPanel({ lead }: { lead: Lead }) {
 
       {/* Contact */}
       <div style={{ marginBottom: 16 }}>
-        <div style={{ fontSize: 10, color: '#555', textTransform: 'uppercase', marginBottom: 4 }}>Contact</div>
+        <div style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase', marginBottom: 4 }}>Contact</div>
         {lead.callable_phones.length > 0 ? (
           lead.callable_phones.map((p, i) => (
-            <div key={i} style={{ color: '#ccc', fontSize: 13 }}>
-              {p.phone_value} <span style={{ color: '#555' }}>({p.phone_type})</span>
+            <div key={i} style={{ color: '#cbd5e1', fontSize: 13 }}>
+              {p.phone_value} <span style={{ color: '#475569' }}>({p.phone_type})</span>
               {p.dnc ? <span style={{ color: '#ef4444', marginLeft: 4 }}>DNC</span> : null}
             </div>
           ))
@@ -297,12 +307,12 @@ function DetailPanel({ lead }: { lead: Lead }) {
       </div>
 
       {/* Source + Router */}
-      <div style={{ fontSize: 10, color: '#555', textTransform: 'uppercase', marginBottom: 4 }}>Source</div>
+      <div style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase', marginBottom: 4 }}>Source</div>
       <div style={{ color: '#aaa', fontSize: 12, marginBottom: 12 }}>{lead.source || '—'}</div>
 
       {lead.router_reason && (
         <>
-          <div style={{ fontSize: 10, color: '#555', textTransform: 'uppercase', marginBottom: 4 }}>Router Reason</div>
+          <div style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase', marginBottom: 4 }}>Router Reason</div>
           <div style={{ color: '#777', fontSize: 11 }}>{lead.router_reason}</div>
         </>
       )}
@@ -441,15 +451,15 @@ export function CallList() {
   const hasQueuedSelected = (selectedStatuses['queued'] || 0) > 0
   const hasArchivable = selectedLeads.some((l) => l.status !== 'archived' && l.status !== 'dead')
 
-  if (isLoading) return <div style={{ color: '#666' }}>Loading call list...</div>
+  if (isLoading) return <div style={{ color: '#64748b' }}>Loading call list...</div>
 
   if (error) {
     return (
       <div>
-        <h2 style={{ color: '#e0e0e0', fontSize: 20, marginBottom: 16 }}>Call List</h2>
-        <div style={{ padding: 24, background: '#1a1a2e', borderRadius: 8, border: '1px solid #2a2a3e', color: '#888' }}>
+        <h2 style={{ color: '#e2e8f0', fontSize: 20, marginBottom: 16 }}>Call List</h2>
+        <div style={{ padding: 24, background: 'rgba(99,102,241,0.12)', borderRadius: 14, border: '1px solid rgba(255,255,255,0.08)', color: '#94a3b8' }}>
           <p>Connect to Hermes to load the call list.</p>
-          <p style={{ fontSize: 12, color: '#555', marginTop: 4 }}>
+          <p style={{ fontSize: 12, color: '#475569', marginTop: 4 }}>
             Run: <code style={{ color: '#6366f1' }}>python3 -m hermes serve</code>
           </p>
         </div>
@@ -462,9 +472,9 @@ export function CallList() {
       <div style={{ flex: 1, minWidth: 0 }}>
         {/* Header with count + DIAL TIME + Refresh */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-          <h2 style={{ color: '#e0e0e0', fontSize: 20, margin: 0 }}>
+          <h2 style={{ color: '#e2e8f0', fontSize: 20, margin: 0 }}>
             Call List
-            <span style={{ color: '#666', fontSize: 14, marginLeft: 8 }}>
+            <span style={{ color: '#64748b', fontSize: 14, marginLeft: 8 }}>
               ({filtered.length}{sourceFilter || statusFilter ? ` of ${leads?.length ?? 0}` : ''})
             </span>
           </h2>
@@ -481,7 +491,7 @@ export function CallList() {
             >DIAL TIME</button>
             <button
               onClick={() => queryClient.invalidateQueries({ queryKey: ['queue-all'] })}
-              style={{ ...btnBase, background: '#1a1a2e', color: '#888', padding: '6px 12px' }}
+              style={{ ...btnBase, background: 'rgba(99,102,241,0.12)', color: '#94a3b8', padding: '6px 12px' }}
             >Refresh</button>
           </div>
         </div>
@@ -493,9 +503,9 @@ export function CallList() {
               onClick={() => setSourceFilter('')}
               style={{
                 ...btnBase, fontSize: 11,
-                background: !sourceFilter ? '#6366f120' : '#111118',
+                background: !sourceFilter ? '#6366f120' : 'rgba(255,255,255,0.03)',
                 color: !sourceFilter ? '#6366f1' : '#666',
-                border: `1px solid ${!sourceFilter ? '#6366f140' : '#1e1e2e'}`,
+                border: `1px solid ${!sourceFilter ? '#6366f140' : 'rgba(255,255,255,0.06)'}`,
               }}
             >All ({readyLeads.length})</button>
             {Array.from(sourceGroups.entries()).sort((a, b) => b[1] - a[1]).map(([src, count]) => (
@@ -504,11 +514,11 @@ export function CallList() {
                 onClick={() => setSourceFilter(src)}
                 style={{
                   ...btnBase, fontSize: 11,
-                  background: sourceFilter === src ? '#6366f120' : '#111118',
+                  background: sourceFilter === src ? '#6366f120' : 'rgba(255,255,255,0.03)',
                   color: sourceFilter === src ? '#6366f1' : '#666',
-                  border: `1px solid ${sourceFilter === src ? '#6366f140' : '#1e1e2e'}`,
+                  border: `1px solid ${sourceFilter === src ? '#6366f140' : 'rgba(255,255,255,0.06)'}`,
                 }}
-              >{formatGroupLabel(src)} <span style={{ color: '#444', marginLeft: 2 }}>({count})</span></button>
+              >{formatGroupLabel(src)} <span style={{ color: '#334155', marginLeft: 2 }}>({count})</span></button>
             ))}
           </div>
         )}
@@ -521,9 +531,9 @@ export function CallList() {
               onClick={() => { setStatusFilter(f.value); setSelectedIds(new Set()) }}
               style={{
                 ...btnBase,
-                background: statusFilter === f.value ? '#6366f120' : '#111118',
+                background: statusFilter === f.value ? '#6366f120' : 'rgba(255,255,255,0.03)',
                 color: statusFilter === f.value ? '#6366f1' : '#666',
-                border: `1px solid ${statusFilter === f.value ? '#6366f140' : '#1e1e2e'}`,
+                border: `1px solid ${statusFilter === f.value ? '#6366f140' : 'rgba(255,255,255,0.06)'}`,
               }}
             >{f.label}</button>
           ))}
@@ -535,7 +545,7 @@ export function CallList() {
             marginBottom: 12, padding: '10px 14px',
             background: pipelineRunning ? '#6366f110' : '#f9731610',
             border: `1px solid ${pipelineRunning ? '#6366f130' : '#f9731630'}`,
-            borderRadius: 8,
+            borderRadius: 14,
           }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -552,7 +562,7 @@ export function CallList() {
                       ? `Enriching ${leadsProcessing > 0 ? leadsProcessing.toLocaleString() : ''} leads...`
                       : `${leadsProcessing.toLocaleString()} lead${leadsProcessing !== 1 ? 's' : ''} processing`}
                   </span>
-                  <div style={{ color: '#888', fontSize: 11, marginTop: 2 }}>
+                  <div style={{ color: '#94a3b8', fontSize: 11, marginTop: 2 }}>
                     {pipelineRunning
                       ? 'Skip trace pipeline is running — leads will appear here once enriched with phone numbers.'
                       : 'Leads without phone numbers are being queued for skip tracing automatically.'}
@@ -592,7 +602,7 @@ export function CallList() {
                   {!pipelineRunning && (
                     <button
                       onClick={() => setPipelineOpen(false)}
-                      style={{ background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: 14 }}
+                      style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: 14 }}
                     ><X size={16} /></button>
                   )}
                 </div>
@@ -621,10 +631,10 @@ export function CallList() {
         {selectedIds.size > 0 && (
           <div style={{
             display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12,
-            padding: '8px 12px', background: '#1a1a2e', borderRadius: 8,
-            border: '1px solid #2a2a3e',
+            padding: '8px 12px', background: 'rgba(99,102,241,0.12)', borderRadius: 14,
+            border: '1px solid rgba(255,255,255,0.08)',
           }}>
-            <span style={{ color: '#ccc', fontSize: 12, fontWeight: 600, marginRight: 4 }}>
+            <span style={{ color: '#cbd5e1', fontSize: 12, fontWeight: 600, marginRight: 4 }}>
               {selectedIds.size} selected
             </span>
             <span style={{ color: '#333', fontSize: 16, userSelect: 'none' }}>|</span>
@@ -655,7 +665,7 @@ export function CallList() {
 
             <button
               onClick={selectNone}
-              style={{ ...btnBase, color: '#888', background: '#1e1e2e', marginLeft: 'auto' }}
+              style={{ ...btnBase, color: '#94a3b8', background: 'rgba(255,255,255,0.06)', marginLeft: 'auto' }}
             >Clear Selection</button>
           </div>
         )}
@@ -673,8 +683,8 @@ export function CallList() {
         )}
 
         {/* Table */}
-        <div style={{ overflow: 'auto', borderRadius: 8, border: '1px solid #1e1e2e' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', background: '#111118' }}>
+        <div style={{ overflow: 'auto', borderRadius: 14, border: '1px solid rgba(255,255,255,0.06)' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', background: 'rgba(255,255,255,0.03)' }}>
             <thead>
               <tr style={{ borderBottom: '1px solid #2a2a3e' }}>
                 <th style={{ padding: '10px 8px', width: 36 }}>
@@ -691,7 +701,7 @@ export function CallList() {
                 </th>
                 {['#', 'Address', 'Owner', 'Score', 'Persona', 'ARV', 'Phone', 'Source'].map((h) => (
                   <th key={h} style={{
-                    padding: '10px 12px', textAlign: 'left', fontSize: 11, color: '#666',
+                    padding: '10px 12px', textAlign: 'left', fontSize: 11, color: '#64748b',
                     fontWeight: 500, textTransform: 'uppercase', letterSpacing: 0.5,
                   }}>{h}</th>
                 ))}
@@ -710,7 +720,7 @@ export function CallList() {
               ))}
               {filtered.length === 0 && (
                 <tr>
-                  <td colSpan={9} style={{ padding: 32, textAlign: 'center', color: '#444' }}>
+                  <td colSpan={9} style={{ padding: 32, textAlign: 'center', color: '#334155' }}>
                     {statusFilter || sourceFilter ? 'No leads match this filter.' : 'No leads in queue. Run the pipeline to generate a call list.'}
                   </td>
                 </tr>
@@ -729,8 +739,8 @@ export function CallList() {
 function Detail({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <div style={{ fontSize: 10, color: '#555', textTransform: 'uppercase' }}>{label}</div>
-      <div style={{ fontSize: 13, color: '#ccc' }}>{value}</div>
+      <div style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase' }}>{label}</div>
+      <div style={{ fontSize: 13, color: '#cbd5e1' }}>{value}</div>
     </div>
   )
 }

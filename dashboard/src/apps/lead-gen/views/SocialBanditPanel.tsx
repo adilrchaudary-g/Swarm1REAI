@@ -21,8 +21,8 @@ export function SocialBanditPanel() {
             onClick={() => setSubView(tab.id)}
             style={{
               padding: '6px 14px', border: '1px solid #2a2a3e', borderRadius: 5,
-              background: subView === tab.id ? '#6366f1' : '#1a1a2e',
-              color: subView === tab.id ? '#fff' : '#888',
+              background: subView === tab.id ? '#6366f1' : 'rgba(99,102,241,0.12)',
+              color: subView === tab.id ? '#fff' : '#94a3b8',
               cursor: 'pointer', fontSize: 12,
             }}
           >
@@ -114,8 +114,8 @@ function CommentInbox() {
             onClick={() => { setStatusFilter(s); setSelected(new Set()) }}
             style={{
               padding: '5px 12px', borderRadius: 4, border: 'none',
-              background: statusFilter === s ? '#333' : '#1a1a2e',
-              color: statusFilter === s ? '#fff' : '#666',
+              background: statusFilter === s ? '#333' : 'rgba(99,102,241,0.12)',
+              color: statusFilter === s ? '#fff' : '#64748b',
               cursor: 'pointer', fontSize: 11, fontWeight: 600,
             }}
           >
@@ -128,7 +128,7 @@ function CommentInbox() {
         {/* Bulk actions */}
         {selected.size > 0 && (
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-            <span style={{ fontSize: 11, color: '#888' }}>{selected.size} selected</span>
+            <span style={{ fontSize: 11, color: '#94a3b8' }}>{selected.size} selected</span>
             <button
               onClick={() => bulkClassify.mutate({ ids: [...selected], status: 'qualified' })}
               disabled={bulkClassify.isPending}
@@ -157,7 +157,7 @@ function CommentInbox() {
       {/* Select all */}
       {comments && comments.length > 0 && (
         <div style={{ marginBottom: 8 }}>
-          <label style={{ fontSize: 11, color: '#666', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <label style={{ fontSize: 11, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
             <input
               type="checkbox"
               checked={selected.size === comments.length && comments.length > 0}
@@ -172,7 +172,7 @@ function CommentInbox() {
       {(classify.isError || bulkClassify.isError || ingest.isError) && (
         <div style={{
           padding: '8px 14px', borderRadius: 6, marginBottom: 8,
-          background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
+          background: 'rgba(239,68,68,0.06)', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
         }}>
           {classify.isError && `Classify failed: ${classify.error instanceof Error ? classify.error.message : String(classify.error)}`}
           {bulkClassify.isError && `Bulk classify failed: ${bulkClassify.error instanceof Error ? bulkClassify.error.message : String(bulkClassify.error)}`}
@@ -180,7 +180,7 @@ function CommentInbox() {
         </div>
       )}
 
-      {isLoading && <div style={{ color: '#666', fontSize: 13 }}>Loading comments...</div>}
+      {isLoading && <div style={{ color: '#64748b', fontSize: 13 }}>Loading comments...</div>}
 
       {/* Comment list */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -197,7 +197,7 @@ function CommentInbox() {
       </div>
 
       {comments && comments.length === 0 && (
-        <div style={{ color: '#555', fontSize: 13, padding: 24, textAlign: 'center' }}>
+        <div style={{ color: '#475569', fontSize: 13, padding: 24, textAlign: 'center' }}>
           No comments with status "{statusFilter || 'any'}".
           {statusFilter === 'new' && ' Import comments from Facebook/Instagram ads to get started.'}
         </div>
@@ -212,7 +212,7 @@ const STATUS_COLORS: Record<string, string> = {
   new: '#f59e0b',
   qualified: '#22c55e',
   junk: '#ef4444',
-  duplicate: '#888',
+  duplicate: '#94a3b8',
   ingested: '#6366f1',
 }
 
@@ -259,9 +259,9 @@ function CommentRow({
 
   return (
     <div style={{
-      background: selected ? '#1a1a30' : '#111118',
-      border: `1px solid ${selected ? '#6366f140' : '#1e1e2e'}`,
-      borderRadius: 8, padding: 14,
+      background: selected ? '#1a1a30' : 'rgba(255,255,255,0.03)',
+      border: `1px solid ${selected ? '#6366f140' : 'rgba(255,255,255,0.06)'}`,
+      borderRadius: 14, padding: 14,
     }}>
       <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
         <input
@@ -277,9 +277,9 @@ function CommentRow({
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span style={{
                 padding: '2px 6px', borderRadius: 3, fontSize: 10, fontWeight: 700,
-                background: '#1a1a2e', color: '#888',
+                background: 'rgba(99,102,241,0.12)', color: '#94a3b8',
               }}>{platformIcon}</span>
-              <span style={{ color: '#ccc', fontSize: 13, fontWeight: 600 }}>{comment.commenter_name}</span>
+              <span style={{ color: '#cbd5e1', fontSize: 13, fontWeight: 600 }}>{comment.commenter_name}</span>
               <span style={{
                 padding: '2px 6px', borderRadius: 3, fontSize: 9, fontWeight: 600,
                 background: comment.post_type === 'competitor_ad' ? '#f59e0b20' : '#22c55e20',
@@ -288,8 +288,8 @@ function CommentRow({
             </div>
             <span style={{
               padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 600,
-              color: STATUS_COLORS[comment.status] || '#666',
-              background: (STATUS_COLORS[comment.status] || '#666') + '20',
+              color: STATUS_COLORS[comment.status] || '#64748b',
+              background: (STATUS_COLORS[comment.status] || '#64748b') + '20',
             }}>{comment.status.toUpperCase()}</span>
           </div>
 
@@ -320,7 +320,7 @@ function CommentRow({
                 </span>
               )}
               {comment.extracted_city && (
-                <span style={{ fontSize: 11, color: '#666' }}>
+                <span style={{ fontSize: 11, color: '#64748b' }}>
                   {comment.extracted_city}{comment.extracted_state ? `, ${comment.extracted_state}` : ''}
                 </span>
               )}
@@ -341,12 +341,12 @@ function CommentRow({
             )}
             <button
               onClick={() => setExpanded(!expanded)}
-              style={actionBtnStyle('#888')}
+              style={actionBtnStyle('#94a3b8')}
             >
               {expanded ? 'Close' : 'Edit Extraction'}
             </button>
             {comment.comment_date && (
-              <span style={{ fontSize: 10, color: '#444', marginLeft: 'auto' }}>
+              <span style={{ fontSize: 10, color: '#334155', marginLeft: 'auto' }}>
                 {new Date(comment.comment_date).toLocaleDateString()}
               </span>
             )}
@@ -440,13 +440,13 @@ const actionBtnStyle = (color: string): React.CSSProperties => ({
 })
 
 const labelStyle: React.CSSProperties = {
-  fontSize: 10, color: '#555', textTransform: 'uppercase', letterSpacing: 0.5,
+  fontSize: 10, color: '#475569', textTransform: 'uppercase', letterSpacing: 0.5,
   display: 'block', marginBottom: 3,
 }
 
 const inputStyle: React.CSSProperties = {
   width: '100%', padding: '6px 8px', borderRadius: 4,
-  border: '1px solid #2a2a3e', background: '#111118', color: '#ccc',
+  border: '1px solid #2a2a3e', background: 'rgba(255,255,255,0.03)', color: '#cbd5e1',
   fontSize: 12, boxSizing: 'border-box',
 }
 
@@ -467,12 +467,12 @@ function CampaignsView() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['social-campaigns'] }),
   })
 
-  if (isLoading) return <div style={{ color: '#666' }}>Loading campaigns...</div>
+  if (isLoading) return <div style={{ color: '#64748b' }}>Loading campaigns...</div>
 
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
-        <div style={{ fontSize: 12, color: '#666' }}>
+        <div style={{ fontSize: 12, color: '#64748b' }}>
           Track your own ads and competitor ads to harvest comments from.
         </div>
         <button
@@ -491,7 +491,7 @@ function CampaignsView() {
       {toggle.isError && (
         <div style={{
           padding: '8px 14px', borderRadius: 6, marginBottom: 12,
-          background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
+          background: 'rgba(239,68,68,0.06)', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
         }}>
           {toggle.isError && `Toggle failed: ${toggle.error instanceof Error ? toggle.error.message : String(toggle.error)}`}
         </div>
@@ -500,11 +500,11 @@ function CampaignsView() {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 12 }}>
         {(campaigns || []).map((c) => (
           <div key={c.id} style={{
-            background: '#111118', border: '1px solid #1e1e2e', borderRadius: 8, padding: 16,
+            background: 'rgba(255,255,255,0.03)', border: '1px solid #1e1e2e', borderRadius: 14, padding: 16,
             opacity: c.active ? 1 : 0.5,
           }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-              <span style={{ color: '#e0e0e0', fontSize: 14, fontWeight: 600 }}>{c.campaign_name}</span>
+              <span style={{ color: '#e2e8f0', fontSize: 14, fontWeight: 600 }}>{c.campaign_name}</span>
               <button
                 onClick={() => toggle.mutate({ id: c.id, active: !c.active })}
                 disabled={toggle.isPending}
@@ -519,17 +519,17 @@ function CampaignsView() {
                 {toggle.isPending ? '...' : c.active ? 'Active' : 'Paused'}
               </button>
             </div>
-            <div style={{ fontSize: 11, color: '#666', marginBottom: 6 }}>
+            <div style={{ fontSize: 11, color: '#64748b', marginBottom: 6 }}>
               {c.platform} &middot; {c.post_type.replace('_', ' ')} &middot; {c.target_market}
             </div>
-            <div style={{ fontSize: 11, color: '#444', marginBottom: 8, wordBreak: 'break-all' }}>
+            <div style={{ fontSize: 11, color: '#334155', marginBottom: 8, wordBreak: 'break-all' }}>
               {c.post_url}
             </div>
             <div style={{ display: 'flex', gap: 16, fontSize: 12 }}>
-              <span style={{ color: '#888' }}>{c.total_comments} comments</span>
+              <span style={{ color: '#94a3b8' }}>{c.total_comments} comments</span>
               <span style={{ color: '#22c55e' }}>{c.qualified_comments} qualified</span>
               {c.last_scraped_at && (
-                <span style={{ color: '#555' }}>Last: {new Date(c.last_scraped_at).toLocaleDateString()}</span>
+                <span style={{ color: '#475569' }}>Last: {new Date(c.last_scraped_at).toLocaleDateString()}</span>
               )}
             </div>
           </div>
@@ -537,7 +537,7 @@ function CampaignsView() {
       </div>
 
       {campaigns && campaigns.length === 0 && (
-        <div style={{ color: '#555', fontSize: 13, padding: 24, textAlign: 'center' }}>
+        <div style={{ color: '#475569', fontSize: 13, padding: 24, textAlign: 'center' }}>
           No campaigns yet. Add your Facebook/Instagram ad URLs or competitor ad URLs to track.
         </div>
       )}
@@ -567,7 +567,7 @@ function CreateCampaignForm({ onDone }: { onDone: () => void }) {
 
   return (
     <div style={{
-      background: '#111118', border: '1px solid #1e1e2e', borderRadius: 8,
+      background: 'rgba(255,255,255,0.03)', border: '1px solid #1e1e2e', borderRadius: 14,
       padding: 16, marginBottom: 16,
       display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 10,
     }}>
@@ -616,7 +616,7 @@ function CreateCampaignForm({ onDone }: { onDone: () => void }) {
         {create.isError && (
           <div style={{
             padding: '6px 10px', borderRadius: 4, marginTop: 6,
-            background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 11,
+            background: 'rgba(239,68,68,0.06)', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 11,
           }}>
             Failed: {create.error instanceof Error ? create.error.message : String(create.error)}
           </div>
@@ -656,10 +656,10 @@ function ImportView() {
   return (
     <div>
       <div style={{
-        background: '#111118', border: '1px solid #1e1e2e', borderRadius: 10, padding: 20,
+        background: 'rgba(255,255,255,0.03)', border: '1px solid #1e1e2e', borderRadius: 10, padding: 20,
       }}>
-        <h3 style={{ color: '#e0e0e0', fontSize: 16, margin: '0 0 6px 0' }}>Import Comments</h3>
-        <p style={{ color: '#666', fontSize: 12, margin: '0 0 16px 0', lineHeight: 1.6 }}>
+        <h3 style={{ color: '#e2e8f0', fontSize: 16, margin: '0 0 6px 0' }}>Import Comments</h3>
+        <p style={{ color: '#64748b', fontSize: 12, margin: '0 0 16px 0', lineHeight: 1.6 }}>
           Paste comments from Facebook/Instagram ads. Each comment should be on its own line.
           Use "Name: comment text" format, or just paste the comment text.
           The system will auto-extract phone numbers, addresses, and names.
@@ -718,7 +718,7 @@ Bob Wilson: I have a property on Oak Ave I need gone ASAP`}
         {importComments.isError && (
           <div style={{
             padding: '8px 14px', borderRadius: 6, marginBottom: 12,
-            background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
+            background: 'rgba(239,68,68,0.06)', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
           }}>
             Import failed: {importComments.error instanceof Error ? importComments.error.message : String(importComments.error)}
           </div>
@@ -747,30 +747,30 @@ Bob Wilson: I have a property on Oak Ave I need gone ASAP`}
 
       {/* Instructions */}
       <div style={{
-        marginTop: 20, background: '#111118', border: '1px solid #1e1e2e',
+        marginTop: 20, background: 'rgba(255,255,255,0.03)', border: '1px solid #1e1e2e',
         borderRadius: 10, padding: 20,
       }}>
-        <h3 style={{ color: '#e0e0e0', fontSize: 16, margin: '0 0 12px 0' }}>How This Works</h3>
-        <div style={{ color: '#888', fontSize: 12, lineHeight: 1.8 }}>
+        <h3 style={{ color: '#e2e8f0', fontSize: 16, margin: '0 0 12px 0' }}>How This Works</h3>
+        <div style={{ color: '#94a3b8', fontSize: 12, lineHeight: 1.8 }}>
           <p style={{ margin: '0 0 12px 0' }}>
-            <strong style={{ color: '#ccc' }}>1. Run ads in your target markets.</strong> Post "We buy houses in [City]"
+            <strong style={{ color: '#cbd5e1' }}>1. Run ads in your target markets.</strong> Post "We buy houses in [City]"
             style ads on Facebook/Instagram. Keep them broad -- you want comments, not clicks.
           </p>
           <p style={{ margin: '0 0 12px 0' }}>
-            <strong style={{ color: '#ccc' }}>2. Find competitor ads.</strong> Search for "we buy houses" in your target markets.
+            <strong style={{ color: '#cbd5e1' }}>2. Find competitor ads.</strong> Search for "we buy houses" in your target markets.
             When competitors run ads, their comment sections fill with people tagging friends who need to sell,
             dropping addresses, and sharing phone numbers. These are free leads.
           </p>
           <p style={{ margin: '0 0 12px 0' }}>
-            <strong style={{ color: '#ccc' }}>3. Harvest comments.</strong> Copy/paste comments from ad posts here.
+            <strong style={{ color: '#cbd5e1' }}>3. Harvest comments.</strong> Copy/paste comments from ad posts here.
             The system auto-extracts phone numbers, addresses, @mentions, and city names.
           </p>
           <p style={{ margin: '0 0 12px 0' }}>
-            <strong style={{ color: '#ccc' }}>4. Review and qualify.</strong> In the Comment Inbox, review each comment.
+            <strong style={{ color: '#cbd5e1' }}>4. Review and qualify.</strong> In the Comment Inbox, review each comment.
             Mark good leads as "Qualified" and noise as "Junk". Edit the extracted info if the auto-parser missed something.
           </p>
           <p style={{ margin: 0 }}>
-            <strong style={{ color: '#ccc' }}>5. Ingest to pipeline.</strong> Push qualified comments into the lead pipeline.
+            <strong style={{ color: '#cbd5e1' }}>5. Ingest to pipeline.</strong> Push qualified comments into the lead pipeline.
             They become leads with source "social_bandit" and distress signal "social_media_comment".
             From there, skip trace for phone numbers and add to your call queue.
           </p>

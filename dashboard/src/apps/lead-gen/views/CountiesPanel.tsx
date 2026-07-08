@@ -44,10 +44,10 @@ export function CountiesPanel() {
         <StatCard label="Harvested" value={s?.harvested ?? '–'} />
         {s && s.eligible > 0 && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <div style={{ width: 120, height: 8, background: '#1a1a2e', borderRadius: 4, overflow: 'hidden' }}>
+            <div style={{ width: 120, height: 8, background: 'rgba(99,102,241,0.12)', borderRadius: 4, overflow: 'hidden' }}>
               <div style={{ width: `${Math.round(((s.scouted || 0) / s.eligible) * 100)}%`, height: '100%', background: '#22c55e', borderRadius: 4 }} />
             </div>
-            <span style={{ fontSize: 11, color: '#666' }}>
+            <span style={{ fontSize: 11, color: '#64748b' }}>
               {Math.round(((s.scouted || 0) / s.eligible) * 100)}% scouted
             </span>
           </div>
@@ -95,7 +95,7 @@ export function CountiesPanel() {
               onClick={() => setSortBy(s.key)}
               style={{
                 padding: '4px 10px', borderRadius: 4, fontSize: 11, cursor: 'pointer',
-                border: `1px solid ${sortBy === s.key ? '#6366f1' : '#2a2a3e'}`,
+                border: `1px solid ${sortBy === s.key ? '#6366f1' : 'rgba(255,255,255,0.08)'}`,
                 background: sortBy === s.key ? '#6366f120' : 'transparent',
                 color: sortBy === s.key ? '#818cf8' : '#666',
               }}
@@ -108,7 +108,7 @@ export function CountiesPanel() {
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
-              <tr style={{ borderBottom: '1px solid #2a2a3e', color: '#666' }}>
+              <tr style={{ borderBottom: '1px solid #2a2a3e', color: '#64748b' }}>
                 <th style={th}>#</th>
                 <th style={th}>County</th>
                 <th style={th}>State</th>
@@ -146,13 +146,13 @@ export function CountiesPanel() {
                       {c.regulatory_tier}
                     </span>
                   </td>
-                  <td style={{ ...td, color: '#666' }}>{c.scouted_at ? new Date(c.scouted_at).toLocaleDateString() : '–'}</td>
-                  <td style={{ ...td, color: '#666' }}>{c.last_harvested_at ? new Date(c.last_harvested_at).toLocaleDateString() : '–'}</td>
+                  <td style={{ ...td, color: '#64748b' }}>{c.scouted_at ? new Date(c.scouted_at).toLocaleDateString() : '–'}</td>
+                  <td style={{ ...td, color: '#64748b' }}>{c.last_harvested_at ? new Date(c.last_harvested_at).toLocaleDateString() : '–'}</td>
                 </tr>
               ))}
               {!sorted.length && (
                 <tr>
-                  <td colSpan={13} style={{ ...td, textAlign: 'center', color: '#666', padding: 24 }}>
+                  <td colSpan={13} style={{ ...td, textAlign: 'center', color: '#64748b', padding: 24 }}>
                     {s?.total === 0 ? 'Click "Seed Counties" to load Census data' : 'No counties match current filter'}
                   </td>
                 </tr>
@@ -167,8 +167,8 @@ export function CountiesPanel() {
 
 function StatCard({ label, value }: { label: string; value: string | number }) {
   return (
-    <div style={{ background: '#12121e', border: '1px solid #2a2a3e', borderRadius: 8, padding: '10px 16px', minWidth: 100 }}>
-      <div style={{ fontSize: 10, color: '#666', marginBottom: 2 }}>{label}</div>
+    <div style={{ background: '#12121e', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 14, padding: '10px 16px', minWidth: 100 }}>
+      <div style={{ fontSize: 10, color: '#64748b', marginBottom: 2 }}>{label}</div>
       <div style={{ fontSize: 20, fontWeight: 700, color: '#e2e8f0' }}>{typeof value === 'number' ? value.toLocaleString() : value}</div>
     </div>
   )
@@ -195,10 +195,10 @@ function LogPanel({ lines, phase }: { lines: string[]; phase: string }) {
   useEffect(() => { ref.current?.scrollTo(0, ref.current.scrollHeight) }, [lines.length])
 
   return (
-    <div style={{ background: '#0a0a14', border: '1px solid #2a2a3e', borderRadius: 8, padding: 12, marginBottom: 16 }}>
+    <div style={{ background: '#0a0a14', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 14, padding: 12, marginBottom: 16 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
         <span style={{ fontSize: 11, color: '#22c55e', fontWeight: 600 }}>Scout Pipeline</span>
-        <span style={{ fontSize: 10, color: '#666' }}>{phase}</span>
+        <span style={{ fontSize: 10, color: '#64748b' }}>{phase}</span>
       </div>
       <div ref={ref} style={{ maxHeight: 200, overflow: 'auto', fontFamily: 'monospace', fontSize: 11, color: '#94a3b8' }}>
         {lines.map((line, i) => (

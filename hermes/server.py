@@ -919,12 +919,21 @@ class HermesRuntime:
             def _cors_headers(self) -> None:
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-                self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Export-CSV-Path")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Export-CSV-Path, Authorization")
 
             def _send_json(self, status: int, payload: Any) -> None:
                 body = json.dumps(payload, indent=2, sort_keys=True, default=str).encode("utf-8")
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self._cors_headers()
+                self.end_headers()
+                self.wfile.write(body)
+
+            def _send_html(self, status: int, html: str) -> None:
+                body = html.encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self._cors_headers()
                 self.end_headers()
@@ -941,6 +950,30 @@ class HermesRuntime:
                     return values[0]
                 return default
 
+            def _get_current_user(self) -> dict[str, Any] | None:
+                auth = self.headers.get("Authorization", "")
+                if auth.startswith("Bearer "):
+                    token = auth[7:]
+                    return runtime.store.validate_session(token)
+                return None
+
+            def _require_auth(self) -> dict[str, Any] | None:
+                user = self._get_current_user()
+                if not user:
+                    self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "Authentication required"})
+                return user
+
+            def _require_role(self, *roles: str) -> dict[str, Any] | None:
+                user = self._require_auth()
+                if user and user["role"] not in roles:
+                    self._send_json(HTTPStatus.FORBIDDEN, {"error": "Insufficient permissions"})
+                    return None
+                return user
+
+            def _user_has_permission(self, user: dict[str, Any], perm: str) -> bool:
+                perms = json.loads(user.get("permissions_json") or "[]")
+                return "*" in perms or perm in perms
+
             def do_OPTIONS(self) -> None:  # noqa: N802
                 self.send_response(HTTPStatus.NO_CONTENT)
                 self._cors_headers()
@@ -954,6 +987,28 @@ class HermesRuntime:
                 if path == "/health":
                     self._send_json(HTTPStatus.OK, {"status": "ok"})
                     return
+
+                # ── Auth endpoints (no auth required) ─────────────────
+                if path == "/api/auth/me":
+                    user = self._get_current_user()
+                    if user:
+                        self._send_json(HTTPStatus.OK, user)
+                    else:
+                        self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "Not authenticated"})
+                    return
+
+                if path == "/api/users":
+                    user = self._require_role("admin")
+                    if not user:
+                        return
+                    self._send_json(HTTPStatus.OK, runtime.store.list_users())
+                    return
+
+                # ── Auth gate for dashboard API ───────────────────────
+                if path.startswith("/api/"):
+                    user = self._require_auth()
+                    if not user:
+                        return
 
                 if path == "/bridge/poll":
                     lane = (query.get("lane") or ["houses"])[0]
@@ -982,6 +1037,15 @@ class HermesRuntime:
                         offset=int(self._query_first(query, "offset", "0")),
                     )
                     self._send_json(HTTPStatus.OK, data)
+                    return
+
+                if path == "/api/leads/lookup-by-phone":
+                    phone = self._query_first(query, "phone", "")
+                    result = runtime.store.lookup_lead_by_phone(phone)
+                    if result:
+                        self._send_json(HTTPStatus.OK, result)
+                    else:
+                        self._send_json(HTTPStatus.NOT_FOUND, {"error": "No lead found for that phone number"})
                     return
 
                 m = re.match(r"^/api/leads/([^/]+)/calls$", path)
@@ -1293,6 +1357,14 @@ class HermesRuntime:
                     self._send_json(HTTPStatus.OK, runtime.store.get_tracker_kpis())
                     return
 
+                if path == "/api/kpi/dial-streak":
+                    self._send_json(HTTPStatus.OK, runtime.store.get_dial_streak())
+                    return
+
+                if path == "/api/leads/attempt-counts":
+                    self._send_json(HTTPStatus.OK, runtime.store.get_lead_attempt_counts())
+                    return
+
                 # ── Call Recordings (GET) ────────────────────────
                 if path == "/api/call-recordings":
                     data = runtime.store.list_call_recordings(
@@ -1431,6 +1503,69 @@ class HermesRuntime:
                         self._send_json(HTTPStatus.NOT_FOUND, {"error": "Agent not found"})
                     return
 
+                # ── Contracts (GET) ──────────────────────────────
+                if path == "/api/contracts":
+                    data = runtime.store.list_contracts(
+                        lead_id=self._query_first(query, "lead_id"),
+                        status=self._query_first(query, "status"),
+                        limit=int(self._query_first(query, "limit", "100")),
+                    )
+                    self._send_json(HTTPStatus.OK, data)
+                    return
+
+                m = re.match(r"^/api/contracts/(\d+)$", path)
+                if m:
+                    contract = runtime.store.get_contract(int(m.group(1)))
+                    if contract:
+                        self._send_json(HTTPStatus.OK, contract)
+                    else:
+                        self._send_json(HTTPStatus.NOT_FOUND, {"error": "Contract not found"})
+                    return
+
+                m = re.match(r"^/api/contracts/(\d+)/pdf$", path)
+                if m:
+                    contract = runtime.store.get_contract(int(m.group(1)))
+                    if not contract:
+                        self._send_json(HTTPStatus.NOT_FOUND, {"error": "Contract not found"})
+                        return
+                    pdf_key = "signed_pdf_path" if contract.get("signed_pdf_path") else "pdf_path"
+                    pdf_path = contract.get(pdf_key)
+                    if not pdf_path or not Path(pdf_path).is_file():
+                        self._send_json(HTTPStatus.NOT_FOUND, {"error": "PDF not generated yet"})
+                        return
+                    body = Path(pdf_path).read_bytes()
+                    self.send_response(HTTPStatus.OK)
+                    self.send_header("Content-Type", "application/pdf")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Content-Disposition", f'inline; filename="contract-{m.group(1)}.pdf"')
+                    self._cors_headers()
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+
+                # ── Settings (GET) ───────────────────────────────
+                if path == "/api/settings":
+                    self._send_json(HTTPStatus.OK, runtime.store.get_user_settings())
+                    return
+
+                # ── Seller Signing Page (GET) ────────────────────
+                m = re.match(r"^/sign/([a-f0-9]+)$", path)
+                if m:
+                    token = m.group(1)
+                    contract = runtime.store.get_contract_by_token(token)
+                    if not contract:
+                        self._send_html(HTTPStatus.NOT_FOUND, "<h1>Contract not found</h1><p>This signing link is invalid or has expired.</p>")
+                        return
+                    if contract["status"] == "fully_signed":
+                        self._send_html(HTTPStatus.OK, "<h1>Already Signed</h1><p>This contract has already been fully signed. Thank you!</p>")
+                        return
+                    if contract["status"] == "voided":
+                        self._send_html(HTTPStatus.OK, "<h1>Contract Voided</h1><p>This contract has been voided and is no longer valid.</p>")
+                        return
+                    html = _render_signing_page(contract)
+                    self._send_html(HTTPStatus.OK, html)
+                    return
+
                 # ── Static file serving (dashboard SPA) ───────────
                 self._serve_static(path)
 
@@ -1489,6 +1624,68 @@ class HermesRuntime:
             def do_POST(self) -> None:  # noqa: N802
                 parsed = urlparse(self.path)
                 path = parsed.path
+
+                # ── Auth endpoints (no auth required) ─────────────────
+                if path == "/api/auth/login":
+                    body = self._read_json()
+                    result = runtime.store.authenticate(
+                        body.get("username", ""), body.get("password", ""),
+                    )
+                    if result:
+                        self._send_json(HTTPStatus.OK, result)
+                    else:
+                        self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "Invalid username or password"})
+                    return
+
+                if path == "/api/auth/logout":
+                    auth = self.headers.get("Authorization", "")
+                    if auth.startswith("Bearer "):
+                        runtime.store.logout(auth[7:])
+                    self._send_json(HTTPStatus.OK, {"status": "ok"})
+                    return
+
+                # ── User management (admin only) ──────────────────────
+                if path == "/api/users":
+                    user = self._require_role("admin")
+                    if not user:
+                        return
+                    body = self._read_json()
+                    try:
+                        new_user = runtime.store.create_user(
+                            username=body["username"],
+                            display_name=body.get("display_name", body["username"]),
+                            password=body["password"],
+                            role=body.get("role", "caller"),
+                            permissions=body.get("permissions"),
+                        )
+                        self._send_json(HTTPStatus.CREATED, new_user)
+                    except Exception as exc:
+                        self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                    return
+
+                m = re.match(r"^/api/users/(\d+)$", path)
+                if m:
+                    user = self._require_role("admin")
+                    if not user:
+                        return
+                    user_id = int(m.group(1))
+                    body = self._read_json()
+                    if body.get("_delete"):
+                        runtime.store.delete_user(user_id)
+                        self._send_json(HTTPStatus.OK, {"status": "deleted"})
+                    else:
+                        updated = runtime.store.update_user(user_id, **body)
+                        if updated:
+                            self._send_json(HTTPStatus.OK, updated)
+                        else:
+                            self._send_json(HTTPStatus.NOT_FOUND, {"error": "User not found"})
+                    return
+
+                # ── Auth gate for dashboard API ───────────────────────
+                if path.startswith("/api/"):
+                    user = self._require_auth()
+                    if not user:
+                        return
 
                 if path in {"/bridge/events", "/bridge/heartbeat"}:
                     payload = self._read_json()
@@ -1566,10 +1763,22 @@ class HermesRuntime:
                     self._send_json(HTTPStatus.OK, result)
                     return
 
+                if path == "/api/leads/attempt-counts":
+                    body = self._read_json()
+                    lead_ids = body.get("lead_ids")
+                    result = runtime.store.get_lead_attempt_counts(lead_ids)
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
                 if path == "/api/queue/requeue-stale":
                     body = self._read_json()
                     days = body.get("days_threshold", 10)
                     result = runtime.store.requeue_stale_leads(days_threshold=days)
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                if path == "/api/queue/clean-bad-numbers":
+                    result = runtime.store.clean_queue_bad_numbers()
                     self._send_json(HTTPStatus.OK, result)
                     return
 
@@ -2229,6 +2438,80 @@ class HermesRuntime:
                     for pid in ids:
                         runtime.store.resolve_proposal(pid, "denied", notes=reason)
                     self._send_json(HTTPStatus.OK, {"denied": len(ids)})
+                    return
+
+                # ── Contracts (POST) ─────────────────────────────
+                if path == "/api/contracts":
+                    body = self._read_json()
+                    result = runtime.store.create_contract(body)
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                m = re.match(r"^/api/contracts/(\d+)/sign$", path)
+                if m:
+                    body = self._read_json()
+                    result = runtime.store.sign_contract(
+                        int(m.group(1)),
+                        body.get("role", "purchaser"),
+                        body.get("signature", ""),
+                    )
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                m = re.match(r"^/api/contracts/(\d+)/send$", path)
+                if m:
+                    contract_id = int(m.group(1))
+                    contract = runtime.store.get_contract(contract_id)
+                    if not contract:
+                        self._send_json(HTTPStatus.NOT_FOUND, {"error": "Contract not found"})
+                        return
+                    body = self._read_json()
+                    seller_email = body.get("seller_email") or contract.get("seller_email")
+                    if not seller_email:
+                        self._send_json(HTTPStatus.BAD_REQUEST, {"error": "No seller email provided"})
+                        return
+                    runtime.store.update_contract(contract_id, {"seller_email": seller_email})
+                    result = _send_contract_email(runtime, contract_id, seller_email)
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                m = re.match(r"^/api/contracts/(\d+)/void$", path)
+                if m:
+                    result = runtime.store.void_contract(int(m.group(1)))
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                m = re.match(r"^/api/contracts/(\d+)/upload-pdf$", path)
+                if m:
+                    contract_id = int(m.group(1))
+                    length = int(self.headers.get("Content-Length") or "0")
+                    pdf_data = self.rfile.read(length) if length else b""
+                    contracts_dir = runtime.store.data_dir / "contracts"
+                    contracts_dir.mkdir(parents=True, exist_ok=True)
+                    pdf_path = str(contracts_dir / f"contract-{contract_id}.pdf")
+                    Path(pdf_path).write_bytes(pdf_data)
+                    contract = runtime.store.get_contract(contract_id)
+                    key = "signed_pdf_path" if contract and contract.get("seller_signature") else "pdf_path"
+                    runtime.store.update_contract(contract_id, {key: pdf_path})
+                    self._send_json(HTTPStatus.OK, {"status": "ok", "path": pdf_path})
+                    return
+
+                # ── Settings (POST) ──────────────────────────────
+                if path == "/api/settings":
+                    body = self._read_json()
+                    result = runtime.store.update_user_settings(body)
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                # ── Seller Signing Page (POST) ───────────────────
+                m = re.match(r"^/sign/([a-f0-9]+)$", path)
+                if m:
+                    token = m.group(1)
+                    body = self._read_json()
+                    result = runtime.store.sign_contract_by_token(
+                        token, body.get("signature", ""),
+                    )
+                    self._send_json(HTTPStatus.OK, result)
                     return
 
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
@@ -3771,6 +4054,614 @@ def _start_underwriting(runtime: "HermesRuntime", lead_id: str, refresh: bool = 
         target=_run_underwriting_bg, args=(runtime, lead_id), daemon=True,
     ).start()
     return {"status": "started", "lead_id": lead_id}
+
+
+_tunnel_process: subprocess.Popen | None = None
+_tunnel_url: str | None = None
+
+
+def _start_tunnel(port: int = 8765) -> str | None:
+    """Start a cloudflared quick tunnel and return the public URL."""
+    global _tunnel_process, _tunnel_url
+    if _tunnel_process and _tunnel_process.poll() is None:
+        return _tunnel_url
+
+    try:
+        _tunnel_process = subprocess.Popen(
+            ["cloudflared", "tunnel", "--url", f"http://localhost:{port}"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        import time as _time
+        deadline = _time.time() + 15
+        while _time.time() < deadline:
+            line = _tunnel_process.stdout.readline()
+            if not line:
+                break
+            m = re.search(r"(https://[a-z0-9\-]+\.trycloudflare\.com)", line)
+            if m:
+                _tunnel_url = m.group(1)
+                return _tunnel_url
+    except FileNotFoundError:
+        pass
+    return None
+
+
+def _send_contract_email(
+    runtime: "HermesRuntime", contract_id: int, seller_email: str
+) -> dict[str, Any]:
+    """Send the contract signing link to the seller via Gmail SMTP."""
+    import smtplib
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
+
+    settings = runtime.store.get_user_settings()
+    gmail_user = settings.get("gmail_user", "")
+    gmail_app_password = settings.get("gmail_app_password", "")
+    if not gmail_user or not gmail_app_password:
+        return {"status": "error", "message": "Gmail credentials not configured. Go to Settings to set up."}
+
+    contract = runtime.store.get_contract(contract_id)
+    if not contract:
+        return {"status": "error", "message": "Contract not found"}
+
+    tunnel_url = _start_tunnel()
+    if tunnel_url:
+        signing_url = f"{tunnel_url}/sign/{contract['signing_token']}"
+    else:
+        signing_url = f"http://localhost:8765/sign/{contract['signing_token']}"
+
+    runtime.store.update_contract(contract_id, {"signing_url": signing_url, "status": "pending_seller"})
+
+    purchaser_name = contract.get("purchaser_name") or "the buyer"
+    property_addr = contract.get("property_address") or "the property"
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = f"Option Agreement for {property_addr} - Signature Required"
+    msg["From"] = gmail_user
+    msg["To"] = seller_email
+
+    html_body = f"""
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+      <h2 style="color: #1e293b;">Option Agreement - Signature Required</h2>
+      <p>Hello {contract.get('seller_name', 'there')},</p>
+      <p>You have received an Option Agreement from <strong>{purchaser_name}</strong> for the property at:</p>
+      <p style="font-size: 18px; font-weight: bold; color: #4f46e5; padding: 12px; background: #f1f5f9; border-radius: 8px;">
+        {property_addr}
+      </p>
+      <p><strong>Purchase Price:</strong> ${contract.get('purchase_price', 0):,}</p>
+      <p><strong>Option Fee:</strong> ${contract.get('option_fee', 0):,}</p>
+      <p>Please review and sign the contract by clicking the button below:</p>
+      <a href="{signing_url}"
+         style="display: inline-block; padding: 14px 28px; background: #4f46e5; color: white;
+                text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px;">
+        Review &amp; Sign Contract
+      </a>
+      <p style="margin-top: 24px; color: #64748b; font-size: 13px;">
+        If the button doesn't work, copy and paste this link into your browser:<br>
+        <a href="{signing_url}" style="color: #4f46e5;">{signing_url}</a>
+      </p>
+    </div>
+    """
+
+    msg.attach(MIMEText(html_body, "html"))
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(gmail_user, gmail_app_password)
+            server.send_message(msg)
+        runtime.store.update_contract(contract_id, {"signing_email_sent_at": now})
+        return {"status": "ok", "signing_url": signing_url, "email_sent_to": seller_email}
+    except Exception as e:
+        return {"status": "error", "message": f"Email failed: {e}"}
+
+
+def _number_to_words(n: int) -> str:
+    """Convert an integer to English words for contract text."""
+    if n == 0:
+        return "Zero"
+    ones = ["", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine",
+            "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen",
+            "Seventeen", "Eighteen", "Nineteen"]
+    tens = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"]
+    if n < 0:
+        return "Negative " + _number_to_words(-n)
+    result = ""
+    if n >= 1_000_000:
+        result += _number_to_words(n // 1_000_000) + " Million "
+        n %= 1_000_000
+    if n >= 1_000:
+        result += _number_to_words(n // 1_000) + " Thousand "
+        n %= 1_000
+    if n >= 100:
+        result += ones[n // 100] + " Hundred "
+        n %= 100
+    if n >= 20:
+        result += tens[n // 10] + " "
+        n %= 10
+    if n > 0:
+        result += ones[n] + " "
+    return result.strip()
+
+
+def _render_signing_page(contract: dict[str, Any]) -> str:
+    """Render a self-contained HTML signing page with the full contract text."""
+    contract_data = {}
+    try:
+        contract_data = json.loads(contract.get("contract_data_json") or "{}")
+    except Exception:
+        pass
+
+    purchaser_name = contract.get("purchaser_name") or contract_data.get("purchaser_name", "")
+    purchaser_address = contract.get("purchaser_address") or contract_data.get("purchaser_address", "")
+    seller_name = contract.get("seller_name") or contract_data.get("seller_name", "")
+    seller_address = contract.get("seller_address") or contract_data.get("seller_address", "")
+    property_address = contract.get("property_address") or contract_data.get("property_address", "")
+    property_county = contract.get("property_county") or contract_data.get("property_county", "")
+    property_state = contract.get("property_state") or contract_data.get("property_state", "")
+    purchase_price = contract.get("purchase_price") or 0
+    option_fee = contract.get("option_fee") or 0
+    amount_due = contract.get("amount_due_at_closing") or (purchase_price - option_fee)
+    option_term_end = contract.get("option_term_end_date") or contract_data.get("option_term_end_date", "")
+    closing_date = contract.get("closing_date") or contract_data.get("closing_date", "")
+    token = contract["signing_token"]
+
+    now = datetime.now()
+    day = contract_data.get("contract_date_day", str(now.day))
+    month = contract_data.get("contract_date_month", now.strftime("%B"))
+    year_raw = contract_data.get("contract_date_year", str(now.year))
+    yr = str(int(year_raw) % 100) if year_raw.isdigit() else year_raw
+
+    purchase_words = _number_to_words(purchase_price)
+    amount_due_words = _number_to_words(amount_due)
+
+    purchaser_sig_html = ""
+    if contract.get("purchaser_signature"):
+        purchaser_sig_html = f'<img src="{contract["purchaser_signature"]}" style="height: 48px;" />'
+    else:
+        purchaser_sig_html = '<div style="height: 48px; border-bottom: 1px solid #333;"></div>'
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sign Contract - {property_address}</title>
+<style>
+  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+         background: #f8fafc; color: #1e293b; padding: 16px; }}
+  .container {{ max-width: 680px; margin: 0 auto; }}
+  .card {{ background: white; border-radius: 12px; padding: 24px; margin-bottom: 16px;
+           box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
+  h1 {{ font-size: 22px; margin-bottom: 4px; }}
+  h2 {{ font-size: 18px; margin-bottom: 12px; color: #334155; }}
+  .subtitle {{ color: #64748b; font-size: 14px; margin-bottom: 16px; }}
+  .contract-text {{ font-family: 'Times New Roman', Times, Georgia, serif; font-size: 15px;
+                     line-height: 1.7; color: #1e293b; }}
+  .contract-text h2 {{ font-size: 16px; margin-top: 20px; margin-bottom: 8px; font-family: inherit; color: #1e293b; }}
+  .contract-text p {{ margin-bottom: 10px; }}
+  .contract-text u {{ text-decoration-thickness: 1px; text-underline-offset: 2px; }}
+  .sig-area {{ border: 2px dashed #cbd5e1; border-radius: 8px; margin: 12px 0;
+               background: white; position: relative; touch-action: none; }}
+  canvas {{ display: block; width: 100%; height: 200px; border-radius: 6px; cursor: crosshair; }}
+  .btn {{ display: inline-block; padding: 14px 28px; border: none; border-radius: 8px;
+          font-size: 16px; font-weight: 600; cursor: pointer; width: 100%; }}
+  .btn-primary {{ background: #4f46e5; color: white; }}
+  .btn-primary:disabled {{ background: #94a3b8; cursor: not-allowed; }}
+  .btn-secondary {{ background: #e2e8f0; color: #475569; margin-bottom: 8px; }}
+  .success {{ text-align: center; padding: 48px 24px; }}
+  .success h2 {{ color: #059669; font-size: 24px; margin-bottom: 8px; }}
+  .disclaimer {{ font-size: 12px; color: #94a3b8; margin-top: 12px; text-align: center; }}
+  .hidden {{ display: none; }}
+  .sig-block {{ display: flex; gap: 32px; margin-top: 32px; }}
+  .sig-block > div {{ flex: 1; }}
+  .sig-line {{ border-bottom: 1px solid #333; height: 48px; margin-top: 4px; }}
+</style>
+</head>
+<body>
+<div class="container">
+  <div id="signing-form">
+    <!-- Full Contract Text -->
+    <div class="card">
+      <div class="contract-text">
+        <p style="text-align: center; font-size: 11px; color: #666; margin-bottom: 4px;">OPTION AGREEMENT FOR PURCHASE OF REAL PROPERTY</p>
+        <h1 style="text-align: center; font-size: 20px; margin-bottom: 20px; font-weight: bold;">
+          OPTION AGREEMENT FOR PURCHASE OF REAL PROPERTY
+        </h1>
+
+        <p>
+          THIS OPTION AGREEMENT FOR PURCHASE OF REAL PROPERTY (this &ldquo;Agreement&rdquo;) is made and
+          entered into as of the <u>{day}</u> day of <u>{month}</u>, 20<u>{yr}</u>, by and between
+          <u>{seller_name}</u>, whose mailing address is
+          <u>{seller_address}</u> (&ldquo;Seller&rdquo;), and
+          <u>{purchaser_name}</u>, whose mailing address is
+          <u>{purchaser_address}</u> (&ldquo;Purchaser&rdquo;). Seller and Purchaser may be
+          referred to individually as a &ldquo;Party&rdquo; and collectively as the &ldquo;Parties.&rdquo;
+        </p>
+
+        <h2 style="text-align: center;">RECITALS</h2>
+
+        <p>
+          A. Seller represents that Seller is the fee simple owner of the real property located in the County/City of
+          <u>{property_county}</u>, State/Commonwealth of <u>{property_state}</u>,
+          commonly known as <u>{property_address}</u> (the &ldquo;Property&rdquo;).
+        </p>
+
+        <p>
+          B. The Property is more particularly described by the legal description attached as Exhibit A, or, if no exhibit is
+          attached, by the following legal description:<br/>
+          <u>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</u>
+        </p>
+
+        <p>
+          C. Purchaser desires to obtain from Seller the exclusive option to purchase the Property on the terms stated in
+          this Agreement, and Seller desires to grant that option.
+        </p>
+
+        <p>
+          NOW, THEREFORE, for good and valuable consideration, the receipt and sufficiency of which are
+          acknowledged, the Parties agree as follows:
+        </p>
+
+        <p>
+          <strong>1. GRANT OF OPTION.</strong> Seller hereby grants to Purchaser the exclusive and assignable right and option to
+          purchase the Property (the &ldquo;Option&rdquo;) during the Option Term on the terms and conditions stated in this
+          Agreement. During the Option Term, Seller shall not sell, contract to sell, lease, encumber, transfer, or
+          otherwise dispose of the Property, except as expressly permitted by this Agreement or agreed to in writing by
+          Purchaser.
+        </p>
+
+        <p>
+          <strong>2. OPTION FEE.</strong> As consideration for the Option, Purchaser shall pay an option fee in the amount of
+          ${option_fee:,} (the &ldquo;Option Fee&rdquo;) on or before the date this Agreement is fully executed. The Option Fee
+          shall be paid to: [X] Seller directly; [ ] the escrow/title company identified in Section 11; or [ ] other:
+          ______________________________. Unless this Agreement expressly states otherwise, the Option Fee is
+          non-refundable to Purchaser if Purchaser does not exercise the Option before expiration of the Option Term. If
+          Purchaser exercises the Option and closing occurs, the Option Fee shall be credited toward the Purchase
+          Price at closing.
+        </p>
+
+        <p>
+          <strong>3. OPTION TERM.</strong> The Option shall begin on the date this Agreement is fully executed by both Parties (the
+          &ldquo;Execution Date&rdquo;) and shall expire at 5:00 p.m. local time for the Property on
+          <u>{option_term_end}</u>, 20<u>{yr}</u> (the &ldquo;Option Expiration Date&rdquo;), unless extended in writing by both
+          Parties. The period between the Execution Date and the Option Expiration Date is the &ldquo;Option Term.&rdquo; Time is of
+          the essence for all deadlines in this Agreement.
+        </p>
+
+        <p>
+          <strong>4. EXERCISE OF OPTION.</strong> Purchaser may exercise the Option at any time during the Option Term by
+          delivering written notice to Seller before the Option expires (the &ldquo;Exercise Notice&rdquo;). The date Purchaser sends
+          or delivers the Exercise Notice is the &ldquo;Option Exercise Date.&rdquo; Upon timely exercise of the Option, this
+          Agreement shall automatically become a binding contract for Seller to sell and Purchaser, or Purchaser&rsquo;s
+          assignee, to purchase the Property on the terms stated in this Agreement. The Parties shall execute customary
+          closing documents required by the title company, settlement agent, lender, or applicable law, but no separate
+          purchase agreement shall be required unless the Parties both agree in writing.
+        </p>
+
+        <p>
+          <strong>5. PURCHASE PRICE.</strong> The purchase price for the Property shall be ${purchase_price:,} (the &ldquo;Purchase
+          Price&rdquo;). At closing, Purchaser shall receive a credit against the Purchase Price for the Option Fee actually paid.
+          The balance due at closing, before prorations, adjustments, closing costs, credits, and lender charges, shall be
+          ${amount_due:,}.
+        </p>
+
+        <p>
+          <strong>6. CLOSING.</strong> Closing shall occur on or before the earlier of (a) ______ days after the Option Exercise Date, or
+          (b) <u>{closing_date}</u>, 20<u>{yr}</u>, unless the Parties agree in writing to a different closing date
+          (the &ldquo;Closing Date&rdquo;). Closing shall occur through a licensed title company, settlement agent, escrow agent, or
+          attorney selected by Purchaser, unless applicable law requires otherwise. Seller shall convey title by a deed
+          customarily used in the jurisdiction where the Property is located, subject only to permitted exceptions
+          approved by Purchaser.
+        </p>
+
+        <p>
+          <strong>7. CLOSING COSTS AND PRORATIONS.</strong> Unless otherwise required by law or agreed in writing: (a)
+          Purchaser shall pay Purchaser-side closing costs, lender charges, recording fees for Purchaser&rsquo;s documents,
+          and title insurance premiums requested by Purchaser; (b) Seller shall pay Seller-side closing costs, costs to
+          release liens or encumbrances, deed preparation charges customarily paid by sellers, and any transfer taxes
+          or grantor taxes customarily paid by sellers in the Property&rsquo;s jurisdiction; and (c) real estate taxes, rents,
+          homeowner association dues, utilities, and other property-related charges shall be prorated as of the Closing
+          Date.
+        </p>
+
+        <p>
+          <strong>8. TITLE.</strong> Seller shall convey good, marketable, and insurable title to the Property, free and clear of all liens,
+          judgments, deeds of trust, mortgages, leases, occupancy rights, code violations, and encumbrances, except for
+          matters accepted in writing by Purchaser. Purchaser may obtain a title search or title commitment. If title
+          defects are discovered, Seller shall use commercially reasonable efforts to cure them before closing and may
+          use closing proceeds to satisfy monetary liens. If Seller cannot deliver title as required, Purchaser may
+          terminate this Agreement and receive a return of all amounts paid by Purchaser, without limiting any other
+          remedies available for Seller default.
+        </p>
+
+        <p>
+          <strong>9. DUE DILIGENCE; ACCESS; CONDITION.</strong> During the Option Term and, if the Option is exercised, until
+          closing, Purchaser and Purchaser&rsquo;s representatives, inspectors, contractors, lenders, partners, agents,
+          prospective assignees, and consultants may access the Property upon reasonable notice for inspections,
+          measurements, photographs, videos, repair estimates, appraisals, surveys, financing, title review, and other
+          due diligence. Seller shall reasonably cooperate with such access. Purchaser shall be responsible for damage
+          to the Property caused by Purchaser or Purchaser&rsquo;s representatives during access. Unless otherwise agreed in
+          writing, the Property is sold in its present &ldquo;as-is&rdquo; condition, subject to Seller&rsquo;s representations, required
+          disclosures, title obligations, and any written repair agreements.
+        </p>
+
+        <p>
+          <strong>10. ASSIGNMENT; INVESTOR DISCLOSURE.</strong> Purchaser may assign this Agreement and/or Purchaser&rsquo;s
+          rights under the Option, in whole or in part, to any person or entity without Seller&rsquo;s further consent. Purchaser
+          shall provide Seller written notice of any assignment before closing. Any assignee shall assume Purchaser&rsquo;s
+          obligations for closing from and after the effective date of the assignment. Seller acknowledges that Purchaser
+          may be a real estate investor, may seek to assign this Agreement or the Option for a fee or profit, and is not
+          acting as Seller&rsquo;s real estate broker, agent, fiduciary, or representative unless a separate written agency
+          agreement states otherwise. Purchaser shall comply with all applicable licensing, disclosure, advertising, and
+          real estate laws.
+        </p>
+
+        <p>
+          <strong>11. ESCROW / TITLE COMPANY.</strong> If any funds are to be held in escrow, they shall be held by: Name:
+          ______________________________________________; Address:
+          ______________________________________________; Phone/Email:
+          ______________________________________________ (the &ldquo;Escrow Agent&rdquo;). The Escrow Agent shall apply
+          funds at closing or release funds according to this Agreement, written instructions signed by the Parties, or
+          applicable law.
+        </p>
+
+        <p>
+          <strong>12. SELLER REPRESENTATIONS.</strong> Seller represents, to Seller&rsquo;s actual knowledge, that: (a) Seller has full
+          authority to enter into and perform this Agreement; (b) no other person or entity has a superior right to
+          purchase the Property; (c) Seller has not entered into any other contract, option, lease-option, or agreement to
+          sell the Property that conflicts with this Agreement; (d) there are no undisclosed tenants, occupants, leases,
+          rental agreements, or possession rights affecting the Property, except:
+          ______________________________________________; (e) Seller has not received written notice of pending
+          condemnation, litigation, code enforcement, or governmental action affecting the Property, except:
+          ______________________________________________; and (f) Seller will not intentionally impair title or
+          materially change the condition of the Property before closing, ordinary wear and tear excepted.
+        </p>
+
+        <p>
+          <strong>13. REQUIRED DISCLOSURES.</strong> Seller shall provide Purchaser all disclosures required by federal, state, and
+          local law, including, if applicable, lead-based paint disclosures for residential property built before 1978,
+          property condition disclosures, homeowner association or condominium disclosures, septic/well disclosures,
+          and any other notices required in the jurisdiction where the Property is located. Required disclosures are
+          incorporated into this Agreement by reference.
+        </p>
+
+        <p>
+          <strong>14. RISK OF LOSS; MAINTENANCE.</strong> Risk of loss or material damage to the Property shall remain with Seller
+          until closing. Seller shall maintain the Property in substantially the same condition as of the Execution Date,
+          reasonable wear and tear excepted, and shall not remove fixtures, appliances, or personal property included in
+          the sale unless this Agreement states otherwise.
+        </p>
+
+        <p>
+          <strong>15. PURCHASER DEFAULT.</strong> If Purchaser timely exercises the Option and then fails to close in violation of this
+          Agreement, and such failure is not caused by Seller default, title defect, casualty, failure of a contingency, or
+          other permitted termination right, Seller&rsquo;s sole and exclusive remedy shall be to retain the Option Fee as
+          liquidated damages. The Parties agree that actual damages would be difficult to determine and that the Option
+          Fee is a reasonable estimate of Seller&rsquo;s damages. Seller shall have no further claim against Purchaser for
+          money damages, consequential damages, or specific performance.
+        </p>
+
+        <p>
+          <strong>16. SELLER DEFAULT.</strong> If Seller fails or refuses to perform under this Agreement, including by refusing to
+          honor the Option, refusing to close after timely exercise, entering into a conflicting agreement, or failing to
+          deliver title as required, Purchaser may pursue any remedies available at law or in equity, including specific
+          performance, injunctive relief, return of amounts paid, costs, and money damages, subject to applicable
+          law.
+        </p>
+
+        <p>
+          <strong>17. MEMORANDUM OF OPTION.</strong> At Purchaser&rsquo;s request, Seller shall execute a short-form memorandum of
+          this Agreement suitable for recording in the land records of the jurisdiction where the Property is located. The
+          memorandum shall not disclose the Purchase Price unless required by law. If the Option expires without
+          exercise or this Agreement is terminated, Purchaser shall reasonably cooperate in recording a release of the
+          memorandum.
+        </p>
+
+        <p>
+          <strong>18. NOTICES.</strong> Any notice required or permitted under this Agreement shall be in writing and delivered by
+          personal delivery, recognized overnight courier, certified mail, or email to the addresses below, or to any
+          updated address provided by written notice. Notice shall be deemed given upon delivery, refusal of delivery,
+          confirmed email transmission, or attempted delivery to the correct address. Seller notice address/email:
+          <u>{seller_address}</u>. Purchaser notice address/email:
+          <u>{purchaser_address}</u>.
+        </p>
+
+        <p>
+          <strong>19. BROKERS.</strong> Each Party represents that no broker, agent, or finder is entitled to a commission or fee in
+          connection with this Agreement, except: ______________________________. The Party
+          whose conduct creates a broker claim shall indemnify the other Party from that claim, subject to applicable law.
+        </p>
+
+        <p>
+          <strong>20. GOVERNING LAW; VENUE.</strong> This Agreement shall be governed by and construed according to the laws of
+          the State/Commonwealth where the Property is located. Venue for any legal action shall be in a court of competent jurisdiction in
+          the county or city where the Property is located, unless applicable law requires otherwise.
+        </p>
+
+        <p>
+          <strong>21. SUCCESSORS AND ASSIGNS.</strong> This Agreement shall bind and benefit the Parties and their respective
+          heirs, personal representatives, successors, permitted assigns, and legal representatives.
+        </p>
+
+        <p>
+          <strong>22. ENTIRE AGREEMENT; AMENDMENTS.</strong> This Agreement contains the entire agreement between the
+          Parties regarding the Option and purchase of the Property and supersedes all prior oral or written discussions,
+          offers, negotiations, and agreements. This Agreement may be amended only by a written document signed by
+          both Parties.
+        </p>
+
+        <p>
+          <strong>23. COUNTERPARTS; ELECTRONIC SIGNATURES.</strong> This Agreement may be signed in counterparts, each of
+          which is deemed an original and all of which together constitute one agreement. Signatures delivered
+          electronically, by scanned copy, or through an electronic signature platform shall be effective as originals to the
+          fullest extent permitted by applicable law.
+        </p>
+
+        <p>
+          <strong>24. SEVERABILITY.</strong> If any provision of this Agreement is held invalid or unenforceable, the remaining
+          provisions shall remain in effect to the greatest extent permitted by law, and the invalid or unenforceable
+          provision shall be modified to the minimum extent necessary to make it valid and enforceable.
+        </p>
+
+        <p>
+          <strong>25. AUTHORITY; VOLUNTARY AGREEMENT.</strong> Each person signing this Agreement represents that such
+          person has authority to sign and bind the Party on whose behalf the person signs. The Parties acknowledge
+          that they have had the opportunity to consult legal counsel and that they are signing this Agreement voluntarily.
+        </p>
+
+        <p style="margin-top: 28px;">
+          IN WITNESS WHEREOF, the Parties have executed this Agreement as of the dates written below.
+        </p>
+
+        <div style="margin-top: 36px;">
+          <h2>SIGNATURES</h2>
+          <div class="sig-block">
+            <div>
+              <p><strong>SELLER:</strong></p>
+              <div class="sig-line"></div>
+              <p style="margin-top: 4px;">{seller_name}</p>
+              <p style="font-size: 12px; color: #666;">Title/Capacity, if any: ______________________</p>
+              <p style="font-size: 12px; color: #666;">Date: _______________</p>
+            </div>
+            <div>
+              <p><strong>PURCHASER:</strong></p>
+              {purchaser_sig_html}
+              <p style="margin-top: 4px;">{purchaser_name}</p>
+              <p style="font-size: 12px; color: #666;">Title/Capacity, if any: ______________________</p>
+              <p style="font-size: 12px; color: #666;">Date: {month} {day}, 20{yr}</p>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top: 48px;">
+          <h2 style="text-align: center;">EXHIBIT A</h2>
+          <p style="text-align: center; margin-bottom: 16px;">LEGAL DESCRIPTION OF PROPERTY</p>
+          <div style="border-bottom: 1px solid #333; height: 24px; margin-bottom: 8px;"></div>
+          <div style="border-bottom: 1px solid #333; height: 24px; margin-bottom: 8px;"></div>
+          <div style="border-bottom: 1px solid #333; height: 24px; margin-bottom: 8px;"></div>
+          <div style="border-bottom: 1px solid #333; height: 24px; margin-bottom: 8px;"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Signature Capture -->
+    <div class="card">
+      <h2>Your Signature</h2>
+      <p class="subtitle">After reviewing the contract above, draw your signature below</p>
+      <div class="sig-area">
+        <canvas id="sig-canvas"></canvas>
+      </div>
+      <button class="btn btn-secondary" onclick="clearSig()">Clear Signature</button>
+      <button class="btn btn-primary" id="sign-btn" onclick="submitSignature()" disabled>
+        I Agree &amp; Sign
+      </button>
+      <p class="disclaimer">
+        By signing, you agree to the terms of this Option Agreement as shown above.
+      </p>
+    </div>
+  </div>
+  <div id="success-view" class="hidden">
+    <div class="card success">
+      <h2>Contract Signed!</h2>
+      <p>Thank you for signing the Option Agreement for <strong>{property_address}</strong>.</p>
+      <p style="margin-top: 12px; color: #64748b;">You can close this window now.</p>
+    </div>
+  </div>
+</div>
+<script>
+(function() {{
+  const canvas = document.getElementById('sig-canvas');
+  const ctx = canvas.getContext('2d');
+  const signBtn = document.getElementById('sign-btn');
+  let drawing = false;
+  let hasDrawn = false;
+
+  function resize() {{
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width * 2;
+    canvas.height = rect.height * 2;
+    ctx.scale(2, 2);
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = '#1e293b';
+  }}
+  resize();
+  window.addEventListener('resize', resize);
+
+  function getPos(e) {{
+    const rect = canvas.getBoundingClientRect();
+    const t = e.touches ? e.touches[0] : e;
+    return {{ x: t.clientX - rect.left, y: t.clientY - rect.top }};
+  }}
+
+  function start(e) {{
+    e.preventDefault();
+    drawing = true;
+    const p = getPos(e);
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y);
+  }}
+  function move(e) {{
+    if (!drawing) return;
+    e.preventDefault();
+    const p = getPos(e);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+    hasDrawn = true;
+    signBtn.disabled = false;
+  }}
+  function end() {{ drawing = false; }}
+
+  canvas.addEventListener('mousedown', start);
+  canvas.addEventListener('mousemove', move);
+  canvas.addEventListener('mouseup', end);
+  canvas.addEventListener('mouseleave', end);
+  canvas.addEventListener('touchstart', start, {{ passive: false }});
+  canvas.addEventListener('touchmove', move, {{ passive: false }});
+  canvas.addEventListener('touchend', end);
+
+  window.clearSig = function() {{
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    hasDrawn = false;
+    signBtn.disabled = true;
+  }};
+
+  window.submitSignature = async function() {{
+    if (!hasDrawn) return;
+    signBtn.disabled = true;
+    signBtn.textContent = 'Submitting...';
+    try {{
+      const dataUrl = canvas.toDataURL('image/png');
+      const res = await fetch('/sign/{token}', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ signature: dataUrl }}),
+      }});
+      const data = await res.json();
+      if (data.status === 'ok') {{
+        document.getElementById('signing-form').classList.add('hidden');
+        document.getElementById('success-view').classList.remove('hidden');
+      }} else {{
+        alert(data.message || 'Signing failed. Please try again.');
+        signBtn.disabled = false;
+        signBtn.textContent = 'I Agree & Sign';
+      }}
+    }} catch (err) {{
+      alert('Network error. Please try again.');
+      signBtn.disabled = false;
+      signBtn.textContent = 'I Agree & Sign';
+    }}
+  }};
+}})();
+</script>
+</body>
+</html>"""
 
 
 def serve_in_thread(

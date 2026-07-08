@@ -37,9 +37,9 @@ export function FsboPanel() {
             onClick={() => setSubView(tab.id)}
             style={{
               padding: '6px 14px', borderRadius: 5,
-              border: `1px solid ${subView === tab.id ? '#6366f1' : '#2a2a3e'}`,
+              border: `1px solid ${subView === tab.id ? '#6366f1' : 'rgba(255,255,255,0.08)'}`,
               background: subView === tab.id ? '#6366f120' : 'transparent',
-              color: subView === tab.id ? '#818cf8' : '#666',
+              color: subView === tab.id ? '#818cf8' : '#64748b',
               fontSize: 12, cursor: 'pointer',
             }}
           >
@@ -60,7 +60,7 @@ function distressColor(score: number): string {
   if (score >= 60) return '#ef4444'
   if (score >= 40) return '#f59e0b'
   if (score >= 20) return '#eab308'
-  return '#666'
+  return '#64748b'
 }
 
 function formatPrice(val: number | null | undefined): string {
@@ -173,7 +173,7 @@ function ListingsView() {
     setSelectedIds(next)
   }
 
-  if (isLoading) return <div style={{ color: '#666' }}>Loading listings...</div>
+  if (isLoading) return <div style={{ color: '#64748b' }}>Loading listings...</div>
 
   const qualifiableCount = (listings || []).filter(
     (l) => l.status === 'qualified' || (l.status === 'new' && l.distress_score >= 40),
@@ -184,16 +184,16 @@ function ListingsView() {
       {/* Scrape banner */}
       <div style={{
         marginBottom: 16, padding: '12px 14px',
-        background: isRunning ? '#6366f110' : '#111118',
-        border: `1px solid ${isRunning ? '#6366f130' : '#1e1e2e'}`,
-        borderRadius: 8,
+        background: isRunning ? '#6366f110' : 'rgba(255,255,255,0.03)',
+        border: `1px solid ${isRunning ? '#6366f130' : 'rgba(255,255,255,0.06)'}`,
+        borderRadius: 14,
       }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div>
-            <span style={{ color: '#e0e0e0', fontSize: 13, fontWeight: 600 }}>
+            <span style={{ color: '#e2e8f0', fontSize: 13, fontWeight: 600 }}>
               Zillow FSBO Scraper
             </span>
-            <div style={{ color: '#888', fontSize: 11, marginTop: 2 }}>
+            <div style={{ color: '#94a3b8', fontSize: 11, marginTop: 2 }}>
               {isRunning
                 ? 'Scraping active markets — watch progress below.'
                 : 'Scrape all active markets, auto-score, and ingest qualified leads.'}
@@ -224,7 +224,7 @@ function ListingsView() {
         </div>
 
         {scrape.isError && (
-          <div style={{ padding: '6px 10px', borderRadius: 4, marginTop: 8, background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 11 }}>
+          <div style={{ padding: '6px 10px', borderRadius: 4, marginTop: 8, background: 'rgba(239,68,68,0.06)', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 11 }}>
             Failed: {scrape.error instanceof Error ? scrape.error.message : String(scrape.error)}
           </div>
         )}
@@ -255,7 +255,7 @@ function ListingsView() {
               {!isRunning && (
                 <button
                   onClick={() => setScrapeOpen(false)}
-                  style={{ background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: 14 }}
+                  style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: 14 }}
                 ><X size={16} /></button>
               )}
             </div>
@@ -266,7 +266,7 @@ function ListingsView() {
                     : line.includes('[zillow]') ? '#6366f1'
                       : line.includes('Imported') ? '#22c55e'
                         : line.includes('Auto-ingest') ? '#eab308'
-                          : '#888',
+                          : '#94a3b8',
                 }}>{line}</div>
               ))}
               <div ref={logEndRef} />
@@ -292,7 +292,7 @@ function ListingsView() {
           ].map((s) => (
             <div key={s.label} style={{ textAlign: 'center' }}>
               <div style={{ fontSize: 20, fontWeight: 700, color: s.color }}>{s.value}</div>
-              <div style={{ fontSize: 10, color: '#555', textTransform: 'uppercase' }}>{s.label}</div>
+              <div style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase' }}>{s.label}</div>
             </div>
           ))}
         </div>
@@ -313,9 +313,9 @@ function ListingsView() {
               onClick={() => { setStatusFilter(f.val); setSelectedIds(new Set()) }}
               style={{
                 padding: '4px 10px', borderRadius: 4, fontSize: 11,
-                border: `1px solid ${statusFilter === f.val ? '#6366f1' : '#2a2a3e'}`,
+                border: `1px solid ${statusFilter === f.val ? '#6366f1' : 'rgba(255,255,255,0.08)'}`,
                 background: statusFilter === f.val ? '#6366f120' : 'transparent',
-                color: statusFilter === f.val ? '#818cf8' : '#666',
+                color: statusFilter === f.val ? '#818cf8' : '#64748b',
                 cursor: 'pointer',
               }}
             >
@@ -328,7 +328,7 @@ function ListingsView() {
             onChange={(e) => setSortBy(e.target.value)}
             style={{
               padding: '4px 8px', borderRadius: 4, border: '1px solid #2a2a3e',
-              background: '#0d0d14', color: '#888', fontSize: 11,
+              background: '#0d0d14', color: '#94a3b8', fontSize: 11,
             }}
           >
             <option value="distress_score">Sort: Distress Score</option>
@@ -394,7 +394,7 @@ function ListingsView() {
       {(ingestListings.isError || ingestAll.isError || bulkClassify.isError || classifyListing.isError) && (
         <div style={{
           padding: '10px 14px', borderRadius: 6, marginBottom: 12,
-          background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
+          background: 'rgba(239,68,68,0.06)', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
         }}>
           {ingestListings.isError && `Ingest failed: ${ingestListings.error instanceof Error ? ingestListings.error.message : String(ingestListings.error)}`}
           {ingestAll.isError && `Ingest all failed: ${ingestAll.error instanceof Error ? ingestAll.error.message : String(ingestAll.error)}`}
@@ -414,14 +414,14 @@ function ListingsView() {
           </span>
           <button
             onClick={() => setIngestResult(null)}
-            style={{ background: 'none', border: 'none', color: '#666', cursor: 'pointer', fontSize: 16 }}
+            style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: 16 }}
           ><X size={16} /></button>
         </div>
       )}
 
       {/* Listing cards */}
       {(!listings || listings.length === 0) ? (
-        <div style={{ color: '#555', fontSize: 13, padding: 20, textAlign: 'center' }}>
+        <div style={{ color: '#475569', fontSize: 13, padding: 20, textAlign: 'center' }}>
           No FSBO listings found. Click "Scrape FSBOs" above to pull listings from Zillow.
         </div>
       ) : (
@@ -476,9 +476,9 @@ function ListingCard({
 
   return (
     <div style={{
-      background: selected ? '#6366f108' : '#111118',
-      border: `1px solid ${selected ? '#6366f140' : '#1e1e2e'}`,
-      borderRadius: 8, padding: '10px 14px',
+      background: selected ? '#6366f108' : 'rgba(255,255,255,0.03)',
+      border: `1px solid ${selected ? '#6366f140' : 'rgba(255,255,255,0.06)'}`,
+      borderRadius: 14, padding: '10px 14px',
       borderLeft: `3px solid ${scoreColor}`,
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -504,18 +504,18 @@ function ListingCard({
         {/* Main info */}
         <div style={{ flex: 1, minWidth: 0, cursor: 'pointer' }} onClick={onToggleExpand}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ color: '#e0e0e0', fontSize: 13, fontWeight: 600 }}>
+            <span style={{ color: '#e2e8f0', fontSize: 13, fontWeight: 600 }}>
               {lst.address}
             </span>
             {lst.city && (
-              <span style={{ color: '#555', fontSize: 11 }}>
+              <span style={{ color: '#475569', fontSize: 11 }}>
                 {lst.city}, {lst.state}
               </span>
             )}
             <span style={{
               padding: '1px 6px', borderRadius: 3, fontSize: 9, fontWeight: 600,
-              color: statusColors[lst.status] || '#666',
-              background: (statusColors[lst.status] || '#666') + '20',
+              color: statusColors[lst.status] || '#64748b',
+              background: (statusColors[lst.status] || '#64748b') + '20',
               textTransform: 'uppercase',
             }}>
               {lst.status}
@@ -523,12 +523,12 @@ function ListingCard({
           </div>
 
           {/* Key metrics row */}
-          <div style={{ display: 'flex', gap: 16, marginTop: 4, fontSize: 11, color: '#888' }}>
-            <span style={{ color: '#e0e0e0', fontWeight: 600 }}>
+          <div style={{ display: 'flex', gap: 16, marginTop: 4, fontSize: 11, color: '#94a3b8' }}>
+            <span style={{ color: '#e2e8f0', fontWeight: 600 }}>
               {formatPrice(lst.asking_price)}
             </span>
             {lst.days_on_market != null && (
-              <span style={{ color: lst.days_on_market >= 90 ? '#ef4444' : lst.days_on_market >= 60 ? '#f59e0b' : '#888' }}>
+              <span style={{ color: lst.days_on_market >= 90 ? '#ef4444' : lst.days_on_market >= 60 ? '#f59e0b' : '#94a3b8' }}>
                 {lst.days_on_market} DOM
               </span>
             )}
@@ -566,7 +566,7 @@ function ListingCard({
                 </span>
               ))}
               {flags.length > 6 && (
-                <span style={{ fontSize: 9, color: '#555' }}>+{flags.length - 6} more</span>
+                <span style={{ fontSize: 9, color: '#475569' }}>+{flags.length - 6} more</span>
               )}
             </div>
           )}
@@ -639,9 +639,9 @@ function ListingCard({
 
           {lst.description && (
             <div style={{ gridColumn: '1 / -1', marginTop: 4 }}>
-              <div style={{ color: '#555', fontSize: 10, marginBottom: 2 }}>DESCRIPTION</div>
+              <div style={{ color: '#475569', fontSize: 10, marginBottom: 2 }}>DESCRIPTION</div>
               <div style={{
-                color: '#888', fontSize: 11, lineHeight: 1.5,
+                color: '#94a3b8', fontSize: 11, lineHeight: 1.5,
                 maxHeight: 80, overflow: 'auto', padding: 8,
                 background: '#0d0d14', borderRadius: 4,
               }}>
@@ -658,8 +658,8 @@ function ListingCard({
 function DetailRow({ label, value }: { label: string; value: string }) {
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-      <span style={{ color: '#555' }}>{label}</span>
-      <span style={{ color: '#ccc' }}>{value}</span>
+      <span style={{ color: '#475569' }}>{label}</span>
+      <span style={{ color: '#cbd5e1' }}>{value}</span>
     </div>
   )
 }
@@ -696,7 +696,7 @@ function MarketsView() {
     },
   })
 
-  if (isLoading) return <div style={{ color: '#666' }}>Loading markets...</div>
+  if (isLoading) return <div style={{ color: '#64748b' }}>Loading markets...</div>
 
   const existingKeys = new Set((markets || []).map((m) => `${m.metro}-${m.state}`))
 
@@ -706,7 +706,7 @@ function MarketsView() {
         <h3 style={{ color: '#aaa', fontSize: 14, margin: 0 }}>FSBO Target Markets</h3>
       </div>
 
-      <div style={{ fontSize: 12, color: '#666', marginBottom: 16 }}>
+      <div style={{ fontSize: 12, color: '#64748b', marginBottom: 16 }}>
         Markets define median prices for distress scoring. Listings priced below median
         get higher scores. Click a market to add it, then use its Zillow link to browse FSBOs.
       </div>
@@ -715,7 +715,7 @@ function MarketsView() {
       {(upsertMarket.isError || toggleMarket.isError) && (
         <div style={{
           padding: '8px 14px', borderRadius: 6, marginBottom: 12,
-          background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
+          background: 'rgba(239,68,68,0.06)', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
         }}>
           {upsertMarket.isError && `Add market failed: ${upsertMarket.error instanceof Error ? upsertMarket.error.message : String(upsertMarket.error)}`}
           {toggleMarket.isError && `Toggle failed: ${toggleMarket.error instanceof Error ? toggleMarket.error.message : String(toggleMarket.error)}`}
@@ -726,16 +726,16 @@ function MarketsView() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 20 }}>
           {markets.map((m) => (
             <div key={m.id} style={{
-              background: '#111118', border: `1px solid ${m.active ? '#1e1e2e' : '#161620'}`,
-              borderRadius: 8, padding: 14,
+              background: 'rgba(255,255,255,0.03)', border: `1px solid ${m.active ? 'rgba(255,255,255,0.06)' : '#161620'}`,
+              borderRadius: 14, padding: 14,
               opacity: m.active ? 1 : 0.5,
             }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div>
-                  <span style={{ color: '#e0e0e0', fontSize: 14, fontWeight: 600 }}>
+                  <span style={{ color: '#e2e8f0', fontSize: 14, fontWeight: 600 }}>
                     {m.metro}, {m.state}
                   </span>
-                  <span style={{ color: '#555', fontSize: 11, marginLeft: 10 }}>
+                  <span style={{ color: '#475569', fontSize: 11, marginLeft: 10 }}>
                     Median: {m.median_price ? `$${m.median_price.toLocaleString()}` : 'Not set'}
                   </span>
                 </div>
@@ -746,7 +746,7 @@ function MarketsView() {
                     </span>
                   )}
                   {m.last_scanned_at && (
-                    <span style={{ fontSize: 10, color: '#444' }}>
+                    <span style={{ fontSize: 10, color: '#334155' }}>
                       Scanned {new Date(m.last_scanned_at).toLocaleDateString()}
                     </span>
                   )}
@@ -757,7 +757,7 @@ function MarketsView() {
                       rel="noopener noreferrer"
                       style={{
                         padding: '4px 10px', borderRadius: 4, border: '1px solid #2a2a3e',
-                        background: '#1a1a2e', color: '#aaa', fontSize: 11,
+                        background: 'rgba(99,102,241,0.12)', color: '#aaa', fontSize: 11,
                         textDecoration: 'none', cursor: 'pointer',
                       }}
                     >
@@ -786,7 +786,7 @@ function MarketsView() {
       )}
 
       {/* Add markets from presets */}
-      <h4 style={{ color: '#888', fontSize: 12, marginBottom: 10 }}>Add Markets</h4>
+      <h4 style={{ color: '#94a3b8', fontSize: 12, marginBottom: 10 }}>Add Markets</h4>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 8 }}>
         {MARKET_PRESETS.map((preset) => {
           const exists = existingKeys.has(`${preset.metro}-${preset.state}`)
@@ -797,16 +797,16 @@ function MarketsView() {
               disabled={exists || upsertMarket.isPending}
               style={{
                 padding: '10px 14px', borderRadius: 6, textAlign: 'left',
-                border: `1px solid ${exists ? '#1a1a2e' : '#2a2a3e'}`,
-                background: exists ? '#0d0d14' : '#1a1a2e',
+                border: `1px solid ${exists ? 'rgba(99,102,241,0.12)' : 'rgba(255,255,255,0.08)'}`,
+                background: exists ? '#0d0d14' : 'rgba(99,102,241,0.12)',
                 cursor: exists ? 'not-allowed' : 'pointer',
                 opacity: exists ? 0.5 : 1,
               }}
             >
-              <div style={{ color: '#e0e0e0', fontSize: 13, fontWeight: 600 }}>
+              <div style={{ color: '#e2e8f0', fontSize: 13, fontWeight: 600 }}>
                 {preset.metro}, {preset.state}
               </div>
-              <div style={{ color: '#555', fontSize: 10, marginTop: 2 }}>
+              <div style={{ color: '#475569', fontSize: 10, marginTop: 2 }}>
                 Median: ${preset.median_price.toLocaleString()}
               </div>
               {exists && <div style={{ color: '#6366f1', fontSize: 10, marginTop: 2 }}>Already added</div>}

@@ -48,15 +48,15 @@ export function DistressedProperties() {
   const severeCt = useMemo(() => properties.filter(p => p.severity >= 2).length, [properties])
   const moderateCt = useMemo(() => properties.filter(p => p.severity === 1).length, [properties])
 
-  if (isLoading) return <div style={{ color: '#666', padding: 24 }}>Loading distressed properties...</div>
+  if (isLoading) return <div style={{ color: '#64748b', padding: 24 }}>Loading distressed properties...</div>
 
   return (
     <div style={{ display: 'flex', gap: 20, height: 'calc(100vh - 120px)' }}>
       {/* Left: card grid */}
       <div style={{ flex: 1, minWidth: 0, overflow: 'auto' }}>
         <div style={{ marginBottom: 16 }}>
-          <h2 style={{ color: '#e0e0e0', fontSize: 20, margin: '0 0 6px' }}>Distressed Properties</h2>
-          <p style={{ color: '#666', fontSize: 13, margin: 0 }}>
+          <h2 style={{ color: '#e2e8f0', fontSize: 20, margin: '0 0 6px' }}>Distressed Properties</h2>
+          <p style={{ color: '#64748b', fontSize: 13, margin: 0 }}>
             {total.toLocaleString()} visually distressed properties from code violation portals. Click to inspect.
           </p>
         </div>
@@ -78,7 +78,7 @@ export function DistressedProperties() {
           <select
             value={cityFilter}
             onChange={e => setCityFilter(e.target.value)}
-            style={{ background: '#1a1a2e', color: '#ccc', border: '1px solid #2a2a3e', borderRadius: 4, padding: '4px 8px', fontSize: 11 }}
+            style={{ background: 'rgba(99,102,241,0.12)', color: '#cbd5e1', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 4, padding: '4px 8px', fontSize: 11 }}
           >
             <option value="">All Cities</option>
             {cities.sort().map(c => <option key={c} value={c}>{formatCity(c)}</option>)}
@@ -95,9 +95,9 @@ export function DistressedProperties() {
                 key={`${p.lat}-${p.lng}-${i}`}
                 onClick={() => setSelected(p)}
                 style={{
-                  background: isSelected ? '#1a1a3a' : '#111118',
-                  border: `1px solid ${isSelected ? '#6366f1' : '#1e1e2e'}`,
-                  borderRadius: 8,
+                  background: isSelected ? '#1a1a3a' : 'rgba(255,255,255,0.03)',
+                  border: `1px solid ${isSelected ? '#6366f1' : 'rgba(255,255,255,0.06)'}`,
+                  borderRadius: 14,
                   overflow: 'hidden',
                   cursor: 'pointer',
                   transition: 'border-color 0.15s',
@@ -122,10 +122,10 @@ export function DistressedProperties() {
 
                 {/* Info */}
                 <div style={{ padding: '10px 12px' }}>
-                  <div style={{ color: '#e0e0e0', fontSize: 13, fontWeight: 600, marginBottom: 2 }}>
+                  <div style={{ color: '#e2e8f0', fontSize: 13, fontWeight: 600, marginBottom: 2 }}>
                     {p.address}
                   </div>
-                  <div style={{ color: '#888', fontSize: 11, marginBottom: 6 }}>
+                  <div style={{ color: '#94a3b8', fontSize: 11, marginBottom: 6 }}>
                     {p.city}, {p.state} {p.zip}
                   </div>
                   <div style={{
@@ -137,7 +137,7 @@ export function DistressedProperties() {
                     {p.violation_subtype ? ` — ${p.violation_subtype}` : ''}
                   </div>
                   {p.date_opened && (
-                    <div style={{ fontSize: 10, color: '#555', marginTop: 4 }}>
+                    <div style={{ fontSize: 10, color: '#475569', marginTop: 4 }}>
                       Opened: {p.date_opened}
                     </div>
                   )}
@@ -148,7 +148,7 @@ export function DistressedProperties() {
         </div>
 
         {properties.length === 0 && (
-          <div style={{ padding: 40, textAlign: 'center', color: '#555' }}>
+          <div style={{ padding: 40, textAlign: 'center', color: '#475569' }}>
             No distressed properties match the current filter.
           </div>
         )}
@@ -157,8 +157,8 @@ export function DistressedProperties() {
       {/* Right: detail panel */}
       {selected && (
         <div style={{
-          width: 400, background: '#111118', border: '1px solid #1e1e2e',
-          borderRadius: 8, padding: 0, position: 'sticky', top: 0,
+          width: 400, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)',
+          borderRadius: 14, padding: 0, position: 'sticky', top: 0,
           maxHeight: 'calc(100vh - 120px)', overflow: 'auto', flexShrink: 0,
         }}>
           {/* Interactive Street View */}
@@ -180,10 +180,10 @@ export function DistressedProperties() {
           </div>
 
           <div style={{ padding: 16 }}>
-            <h3 style={{ color: '#e0e0e0', fontSize: 16, margin: '0 0 4px', fontWeight: 700 }}>
+            <h3 style={{ color: '#e2e8f0', fontSize: 16, margin: '0 0 4px', fontWeight: 700 }}>
               {selected.address}
             </h3>
-            <div style={{ color: '#888', fontSize: 13, marginBottom: 12 }}>
+            <div style={{ color: '#94a3b8', fontSize: 13, marginBottom: 12 }}>
               {selected.city}, {selected.state} {selected.zip}
             </div>
 
@@ -198,8 +198,8 @@ export function DistressedProperties() {
 
             {/* Violation details */}
             <div style={{ marginBottom: 16 }}>
-              <div style={{ fontSize: 10, color: '#555', textTransform: 'uppercase', marginBottom: 4 }}>Violation</div>
-              <div style={{ color: '#e0e0e0', fontSize: 13 }}>{selected.violation_type}</div>
+              <div style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase', marginBottom: 4 }}>Violation</div>
+              <div style={{ color: '#e2e8f0', fontSize: 13 }}>{selected.violation_type}</div>
               {selected.violation_subtype && (
                 <div style={{ color: '#aaa', fontSize: 12, marginTop: 2 }}>{selected.violation_subtype}</div>
               )}
@@ -207,21 +207,21 @@ export function DistressedProperties() {
 
             {selected.date_opened && (
               <div style={{ marginBottom: 16 }}>
-                <div style={{ fontSize: 10, color: '#555', textTransform: 'uppercase', marginBottom: 4 }}>Date Opened</div>
-                <div style={{ color: '#ccc', fontSize: 13 }}>{selected.date_opened}</div>
+                <div style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase', marginBottom: 4 }}>Date Opened</div>
+                <div style={{ color: '#cbd5e1', fontSize: 13 }}>{selected.date_opened}</div>
               </div>
             )}
 
             {selected.case_id && (
               <div style={{ marginBottom: 16 }}>
-                <div style={{ fontSize: 10, color: '#555', textTransform: 'uppercase', marginBottom: 4 }}>Case ID</div>
-                <div style={{ color: '#ccc', fontSize: 13 }}>{selected.case_id}</div>
+                <div style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase', marginBottom: 4 }}>Case ID</div>
+                <div style={{ color: '#cbd5e1', fontSize: 13 }}>{selected.case_id}</div>
               </div>
             )}
 
             <div style={{ marginBottom: 16 }}>
-              <div style={{ fontSize: 10, color: '#555', textTransform: 'uppercase', marginBottom: 4 }}>Source</div>
-              <div style={{ color: '#ccc', fontSize: 13 }}>{formatCity(selected.source_city)} Portal</div>
+              <div style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase', marginBottom: 4 }}>Source</div>
+              <div style={{ color: '#cbd5e1', fontSize: 13 }}>{formatCity(selected.source_city)} Portal</div>
             </div>
 
             {/* Action links */}
@@ -263,7 +263,7 @@ function FilterBtn({ active, onClick, color, children }: { active: boolean; onCl
   return (
     <button onClick={onClick} style={{
       padding: '5px 14px', borderRadius: 5, fontSize: 11, fontWeight: 600, cursor: 'pointer',
-      border: `1px solid ${active ? c : '#2a2a3e'}`,
+      border: `1px solid ${active ? c : 'rgba(255,255,255,0.08)'}`,
       background: active ? c + '20' : 'transparent',
       color: active ? c : '#666',
     }}>{children}</button>

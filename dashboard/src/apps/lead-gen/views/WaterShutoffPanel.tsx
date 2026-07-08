@@ -36,9 +36,9 @@ export function WaterShutoffPanel() {
             onClick={() => setSubView(tab.id)}
             style={{
               padding: '6px 14px', borderRadius: 5,
-              border: `1px solid ${subView === tab.id ? '#6366f1' : '#2a2a3e'}`,
+              border: `1px solid ${subView === tab.id ? '#6366f1' : 'rgba(255,255,255,0.08)'}`,
               background: subView === tab.id ? '#6366f120' : 'transparent',
-              color: subView === tab.id ? '#818cf8' : '#666',
+              color: subView === tab.id ? '#818cf8' : '#64748b',
               fontSize: 12, cursor: 'pointer',
             }}
           >
@@ -108,7 +108,7 @@ function FoiaTracker() {
     },
   })
 
-  if (isLoading) return <div style={{ color: '#666' }}>Loading...</div>
+  if (isLoading) return <div style={{ color: '#64748b' }}>Loading...</div>
 
   const existingCities = new Set((requests || []).map((r) => `${r.city}-${r.state}`))
 
@@ -127,7 +127,7 @@ function FoiaTracker() {
           ].map((s) => (
             <div key={s.label} style={{ textAlign: 'center' }}>
               <div style={{ fontSize: 20, fontWeight: 700, color: s.color }}>{s.value}</div>
-              <div style={{ fontSize: 10, color: '#555', textTransform: 'uppercase' }}>{s.label}</div>
+              <div style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase' }}>{s.label}</div>
             </div>
           ))}
         </div>
@@ -150,10 +150,10 @@ function FoiaTracker() {
       {/* Create panel — pick from presets */}
       {showCreate && (
         <div style={{
-          background: '#111118', border: '1px solid #1e1e2e', borderRadius: 8,
+          background: 'rgba(255,255,255,0.03)', border: '1px solid #1e1e2e', borderRadius: 14,
           padding: 16, marginBottom: 16,
         }}>
-          <div style={{ fontSize: 12, color: '#888', marginBottom: 10 }}>
+          <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 10 }}>
             Select a city to create a FOIA request. Already-created cities are grayed out.
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))', gap: 8 }}>
@@ -167,16 +167,16 @@ function FoiaTracker() {
                   disabled={exists || isBlocked || createRequest.isPending}
                   style={{
                     padding: '10px 14px', borderRadius: 6, textAlign: 'left',
-                    border: `1px solid ${isBlocked ? '#3a1a1a' : exists ? '#1a1a2e' : '#2a2a3e'}`,
-                    background: isBlocked ? '#1f0f0f' : exists ? '#0d0d14' : '#1a1a2e',
+                    border: `1px solid ${isBlocked ? 'rgba(239,68,68,0.15)' : exists ? 'rgba(99,102,241,0.12)' : 'rgba(255,255,255,0.08)'}`,
+                    background: isBlocked ? 'rgba(239,68,68,0.06)' : exists ? '#0d0d14' : 'rgba(99,102,241,0.12)',
                     cursor: exists || isBlocked ? 'not-allowed' : 'pointer',
                     opacity: exists || isBlocked ? 0.5 : 1,
                   }}
                 >
-                  <div style={{ color: '#e0e0e0', fontSize: 13, fontWeight: 600 }}>
+                  <div style={{ color: '#e2e8f0', fontSize: 13, fontWeight: 600 }}>
                     {preset.city}, {preset.state}
                   </div>
-                  <div style={{ color: '#555', fontSize: 10, marginTop: 2 }}>
+                  <div style={{ color: '#475569', fontSize: 10, marginTop: 2 }}>
                     {isBlocked ? preset.note : preset.agency_name}
                   </div>
                   {exists && <div style={{ color: '#6366f1', fontSize: 10, marginTop: 2 }}>Already created</div>}
@@ -191,7 +191,7 @@ function FoiaTracker() {
       {(generateLetter.isError || createRequest.isError || updateRequest.isError) && (
         <div style={{
           padding: '10px 14px', borderRadius: 6, marginBottom: 12,
-          background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
+          background: 'rgba(239,68,68,0.06)', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
         }}>
           {generateLetter.isError && `Letter generation failed: ${generateLetter.error instanceof Error ? generateLetter.error.message : String(generateLetter.error)}`}
           {createRequest.isError && `Request creation failed: ${createRequest.error instanceof Error ? createRequest.error.message : String(createRequest.error)}`}
@@ -202,11 +202,11 @@ function FoiaTracker() {
       {/* Letter modal */}
       {letterText && (
         <div style={{
-          background: '#111118', border: '1px solid #1e1e2e', borderRadius: 8,
+          background: 'rgba(255,255,255,0.03)', border: '1px solid #1e1e2e', borderRadius: 14,
           padding: 20, marginBottom: 16,
         }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <h4 style={{ color: '#e0e0e0', fontSize: 14, margin: 0 }}>FOIA Request Letter</h4>
+            <h4 style={{ color: '#e2e8f0', fontSize: 14, margin: 0 }}>FOIA Request Letter</h4>
             <div style={{ display: 'flex', gap: 8 }}>
               <button
                 onClick={() => {
@@ -214,7 +214,7 @@ function FoiaTracker() {
                 }}
                 style={{
                   padding: '5px 12px', borderRadius: 4, border: '1px solid #2a2a3e',
-                  background: '#1a1a2e', color: '#aaa', fontSize: 11, cursor: 'pointer',
+                  background: 'rgba(99,102,241,0.12)', color: '#aaa', fontSize: 11, cursor: 'pointer',
                 }}
               >
                 Copy to Clipboard
@@ -231,14 +231,14 @@ function FoiaTracker() {
             </div>
           </div>
           <pre style={{
-            color: '#ccc', fontSize: 12, lineHeight: 1.6,
+            color: '#cbd5e1', fontSize: 12, lineHeight: 1.6,
             whiteSpace: 'pre-wrap', background: '#0a0a12', padding: 16,
             borderRadius: 6, border: '1px solid #1a1a2e', maxHeight: 400,
             overflow: 'auto',
           }}>
             {letterText}
           </pre>
-          <div style={{ marginTop: 10, fontSize: 11, color: '#555' }}>
+          <div style={{ marginTop: 10, fontSize: 11, color: '#475569' }}>
             Fill in [YOUR NAME], [YOUR EMAIL], [YOUR PHONE], and [TODAY'S DATE] before sending.
           </div>
         </div>
@@ -246,7 +246,7 @@ function FoiaTracker() {
 
       {/* Request list */}
       {(!requests || requests.length === 0) ? (
-        <div style={{ color: '#555', fontSize: 13, padding: 20, textAlign: 'center' }}>
+        <div style={{ color: '#475569', fontSize: 13, padding: 20, textAlign: 'center' }}>
           No FOIA requests yet. Click "+ New Request" to get started.
         </div>
       ) : (
@@ -267,7 +267,7 @@ function FoiaTracker() {
 }
 
 const STATUS_COLORS: Record<string, string> = {
-  draft: '#666',
+  draft: '#64748b',
   submitted: '#3b82f6',
   processing: '#f59e0b',
   received: '#22c55e',
@@ -287,7 +287,7 @@ function FoiaRequestRow({
   isUpdating: boolean
 }) {
   const [expanded, setExpanded] = useState(false)
-  const statusColor = STATUS_COLORS[req.status] || '#666'
+  const statusColor = STATUS_COLORS[req.status] || '#64748b'
 
   const daysAgo = req.submitted_at
     ? Math.floor((Date.now() - new Date(req.submitted_at).getTime()) / 86400000)
@@ -300,15 +300,15 @@ function FoiaRequestRow({
 
   return (
     <div style={{
-      background: '#111118', border: `1px solid ${isOverdue ? '#3a2a1a' : '#1e1e2e'}`,
-      borderRadius: 8, padding: 14,
+      background: 'rgba(255,255,255,0.03)', border: `1px solid ${isOverdue ? '#3a2a1a' : 'rgba(255,255,255,0.06)'}`,
+      borderRadius: 14, padding: 14,
     }}>
       <div
         style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}
         onClick={() => setExpanded(!expanded)}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ color: '#e0e0e0', fontSize: 14, fontWeight: 600 }}>
+          <span style={{ color: '#e2e8f0', fontSize: 14, fontWeight: 600 }}>
             {req.city}, {req.state}
           </span>
           <span style={{
@@ -326,23 +326,23 @@ function FoiaRequestRow({
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           {daysAgo !== null && (
-            <span style={{ fontSize: 11, color: isOverdue ? '#f59e0b' : '#555' }}>
+            <span style={{ fontSize: 11, color: isOverdue ? '#f59e0b' : '#475569' }}>
               {daysAgo}d ago
             </span>
           )}
-          <span style={{ color: '#444', fontSize: 12 }}>{expanded ? '▲' : '▼'}</span>
+          <span style={{ color: '#334155', fontSize: 12 }}>{expanded ? '▲' : '▼'}</span>
         </div>
       </div>
 
       {expanded && (
         <div style={{ marginTop: 12, borderTop: '1px solid #1a1a2e', paddingTop: 12 }}>
-          <div style={{ fontSize: 11, color: '#666', marginBottom: 8 }}>
+          <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8 }}>
             {req.agency_name}
             {req.agency_contact && <> &middot; {req.agency_contact}</>}
           </div>
 
           {req.notes && (
-            <div style={{ fontSize: 11, color: '#888', marginBottom: 10, fontStyle: 'italic' }}>
+            <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 10, fontStyle: 'italic' }}>
               {req.notes}
             </div>
           )}
@@ -369,7 +369,7 @@ function FoiaRequestRow({
                   disabled={isUpdating}
                   style={{
                     padding: '5px 12px', borderRadius: 4, border: '1px solid #2a2a3e',
-                    background: isUpdating ? '#2a2a3e' : '#1a1a2e', color: '#aaa', fontSize: 11, cursor: 'pointer',
+                    background: isUpdating ? 'rgba(255,255,255,0.08)' : 'rgba(99,102,241,0.12)', color: '#aaa', fontSize: 11, cursor: 'pointer',
                   }}
                 >
                   {isUpdating ? 'Updating...' : 'Mark as Submitted'}
@@ -386,7 +386,7 @@ function FoiaRequestRow({
                   disabled={isUpdating}
                   style={{
                     padding: '5px 12px', borderRadius: 4, border: '1px solid #2a2a3e',
-                    background: isUpdating ? '#2a2a3e' : '#1a1a2e', color: '#aaa', fontSize: 11, cursor: 'pointer',
+                    background: isUpdating ? 'rgba(255,255,255,0.08)' : 'rgba(99,102,241,0.12)', color: '#aaa', fontSize: 11, cursor: 'pointer',
                   }}
                 >
                   {isUpdating ? 'Updating...' : 'Mark Processing'}
@@ -413,7 +413,7 @@ function FoiaRequestRow({
                   disabled={isUpdating}
                   style={{
                     padding: '5px 12px', borderRadius: 4, border: '1px solid #3a1a1a',
-                    background: isUpdating ? '#2a0f0f' : '#1f0f0f', color: '#ef4444', fontSize: 11, cursor: 'pointer',
+                    background: isUpdating ? '#2a0f0f' : 'rgba(239,68,68,0.06)', color: '#ef4444', fontSize: 11, cursor: 'pointer',
                   }}
                 >
                   {isUpdating ? 'Updating...' : 'Denied'}
@@ -556,11 +556,11 @@ function ImportView() {
   return (
     <div>
       <div style={{
-        background: '#111118', border: '1px solid #1e1e2e', borderRadius: 8,
+        background: 'rgba(255,255,255,0.03)', border: '1px solid #1e1e2e', borderRadius: 14,
         padding: 16, marginBottom: 16,
       }}>
-        <h4 style={{ color: '#e0e0e0', fontSize: 14, margin: '0 0 10px 0' }}>Import Water Shutoff Data</h4>
-        <div style={{ fontSize: 12, color: '#666', marginBottom: 14 }}>
+        <h4 style={{ color: '#e2e8f0', fontSize: 14, margin: '0 0 10px 0' }}>Import Water Shutoff Data</h4>
+        <div style={{ fontSize: 12, color: '#64748b', marginBottom: 14 }}>
           Paste CSV data from the file you received. The system auto-detects common column names:
           address, account holder/owner, shutoff/disconnect date, amount/balance, city, state, zip.
         </div>
@@ -568,7 +568,7 @@ function ImportView() {
         {importRecords.isError && (
           <div style={{
             padding: '10px 14px', borderRadius: 6, marginBottom: 14,
-            background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
+            background: 'rgba(239,68,68,0.06)', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
           }}>
             Import failed: {importRecords.error instanceof Error ? importRecords.error.message : String(importRecords.error)}
           </div>
@@ -585,7 +585,7 @@ function ImportView() {
             </span>
             <button
               onClick={() => setImportResult(null)}
-              style={{ background: 'none', border: 'none', color: '#666', cursor: 'pointer', fontSize: 16 }}
+              style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: 16 }}
             ><X size={16} /></button>
           </div>
         )}
@@ -593,7 +593,7 @@ function ImportView() {
         {/* Link to FOIA request */}
         {receivedRequests.length > 0 && (
           <div style={{ marginBottom: 12 }}>
-            <label style={{ fontSize: 11, color: '#888', display: 'block', marginBottom: 4 }}>
+            <label style={{ fontSize: 11, color: '#94a3b8', display: 'block', marginBottom: 4 }}>
               Link to FOIA Request (optional)
             </label>
             <select
@@ -601,7 +601,7 @@ function ImportView() {
               onChange={(e) => setSelectedRequestId(e.target.value ? parseInt(e.target.value) : undefined)}
               style={{
                 padding: '6px 10px', borderRadius: 4, border: '1px solid #2a2a3e',
-                background: '#0d0d14', color: '#ccc', fontSize: 12, width: 300,
+                background: '#0d0d14', color: '#cbd5e1', fontSize: 12, width: 300,
               }}
             >
               <option value="">None</option>
@@ -615,7 +615,7 @@ function ImportView() {
         {/* Fallback city/state */}
         <div style={{ display: 'flex', gap: 10, marginBottom: 14 }}>
           <div>
-            <label style={{ fontSize: 11, color: '#888', display: 'block', marginBottom: 4 }}>
+            <label style={{ fontSize: 11, color: '#94a3b8', display: 'block', marginBottom: 4 }}>
               Default City (if not in data)
             </label>
             <input
@@ -624,12 +624,12 @@ function ImportView() {
               placeholder="e.g. Cincinnati"
               style={{
                 padding: '6px 10px', borderRadius: 4, border: '1px solid #2a2a3e',
-                background: '#0d0d14', color: '#ccc', fontSize: 12, width: 160,
+                background: '#0d0d14', color: '#cbd5e1', fontSize: 12, width: 160,
               }}
             />
           </div>
           <div>
-            <label style={{ fontSize: 11, color: '#888', display: 'block', marginBottom: 4 }}>
+            <label style={{ fontSize: 11, color: '#94a3b8', display: 'block', marginBottom: 4 }}>
               Default State
             </label>
             <select
@@ -637,7 +637,7 @@ function ImportView() {
               onChange={(e) => setFallbackState(e.target.value)}
               style={{
                 padding: '6px 10px', borderRadius: 4, border: '1px solid #2a2a3e',
-                background: '#0d0d14', color: '#ccc', fontSize: 12,
+                background: '#0d0d14', color: '#cbd5e1', fontSize: 12,
               }}
             >
               <option value="OH">OH</option>
@@ -659,7 +659,7 @@ function ImportView() {
           placeholder="Paste CSV data here (with headers)..."
           style={{
             width: '100%', minHeight: 160, padding: 12, borderRadius: 6,
-            border: '1px solid #2a2a3e', background: '#0d0d14', color: '#ccc',
+            border: '1px solid #2a2a3e', background: '#0d0d14', color: '#cbd5e1',
             fontSize: 12, fontFamily: 'monospace', resize: 'vertical',
           }}
         />
@@ -678,16 +678,16 @@ function ImportView() {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
                 <thead>
                   <tr style={{ background: '#0d0d14' }}>
-                    <th style={{ padding: '6px 8px', color: '#888', textAlign: 'left', borderBottom: '1px solid #1a1a2e' }}>Address</th>
-                    <th style={{ padding: '6px 8px', color: '#888', textAlign: 'left', borderBottom: '1px solid #1a1a2e' }}>Owner</th>
-                    <th style={{ padding: '6px 8px', color: '#888', textAlign: 'left', borderBottom: '1px solid #1a1a2e' }}>Shutoff Date</th>
-                    <th style={{ padding: '6px 8px', color: '#888', textAlign: 'right', borderBottom: '1px solid #1a1a2e' }}>Amount</th>
+                    <th style={{ padding: '6px 8px', color: '#94a3b8', textAlign: 'left', borderBottom: '1px solid #1a1a2e' }}>Address</th>
+                    <th style={{ padding: '6px 8px', color: '#94a3b8', textAlign: 'left', borderBottom: '1px solid #1a1a2e' }}>Owner</th>
+                    <th style={{ padding: '6px 8px', color: '#94a3b8', textAlign: 'left', borderBottom: '1px solid #1a1a2e' }}>Shutoff Date</th>
+                    <th style={{ padding: '6px 8px', color: '#94a3b8', textAlign: 'right', borderBottom: '1px solid #1a1a2e' }}>Amount</th>
                   </tr>
                 </thead>
                 <tbody>
                   {parsedRows.slice(0, 10).map((row, i) => (
                     <tr key={i} style={{ borderBottom: '1px solid #111118' }}>
-                      <td style={{ padding: '5px 8px', color: '#ccc' }}>{row.service_address}</td>
+                      <td style={{ padding: '5px 8px', color: '#cbd5e1' }}>{row.service_address}</td>
                       <td style={{ padding: '5px 8px', color: '#aaa' }}>{row.account_holder || '-'}</td>
                       <td style={{ padding: '5px 8px', color: '#aaa' }}>{row.shutoff_date || '-'}</td>
                       <td style={{ padding: '5px 8px', color: '#aaa', textAlign: 'right' }}>
@@ -698,7 +698,7 @@ function ImportView() {
                 </tbody>
               </table>
               {parsedRows.length > 10 && (
-                <div style={{ padding: 6, textAlign: 'center', color: '#555', fontSize: 10 }}>
+                <div style={{ padding: 6, textAlign: 'center', color: '#475569', fontSize: 10 }}>
                   ... and {parsedRows.length - 10} more
                 </div>
               )}
@@ -721,18 +721,18 @@ function ImportView() {
 
       {/* Instructions */}
       <div style={{
-        background: '#111118', border: '1px solid #1e1e2e', borderRadius: 8,
+        background: 'rgba(255,255,255,0.03)', border: '1px solid #1e1e2e', borderRadius: 14,
         padding: 16,
       }}>
         <h4 style={{ color: '#aaa', fontSize: 13, margin: '0 0 10px 0' }}>Preparing Your Data</h4>
-        <ol style={{ color: '#666', fontSize: 12, lineHeight: 1.8, paddingLeft: 20, margin: 0 }}>
+        <ol style={{ color: '#64748b', fontSize: 12, lineHeight: 1.8, paddingLeft: 20, margin: 0 }}>
           <li>Open the file from the water utility (usually CSV or XLSX)</li>
           <li>If XLSX, open in Excel/Sheets and export as CSV</li>
           <li>Select all rows including the header row, copy (Ctrl+C / Cmd+C)</li>
           <li>Paste into the text area above</li>
           <li>Verify the preview looks correct, then click Import</li>
         </ol>
-        <div style={{ fontSize: 11, color: '#555', marginTop: 10 }}>
+        <div style={{ fontSize: 11, color: '#475569', marginTop: 10 }}>
           The system matches common header names automatically. Required: at least one address-like column.
           Optional: owner/name, shutoff/disconnect date, amount/balance.
         </div>
@@ -801,7 +801,7 @@ function RecordsView() {
     }
   }
 
-  if (isLoading) return <div style={{ color: '#666' }}>Loading records...</div>
+  if (isLoading) return <div style={{ color: '#64748b' }}>Loading records...</div>
 
   const newCount = (records || []).filter((r) => r.status === 'new').length
 
@@ -815,9 +815,9 @@ function RecordsView() {
               onClick={() => { setStatusFilter(s); setSelectedIds(new Set()) }}
               style={{
                 padding: '4px 10px', borderRadius: 4, fontSize: 11,
-                border: `1px solid ${statusFilter === s ? '#6366f1' : '#2a2a3e'}`,
+                border: `1px solid ${statusFilter === s ? '#6366f1' : 'rgba(255,255,255,0.08)'}`,
                 background: statusFilter === s ? '#6366f120' : 'transparent',
-                color: statusFilter === s ? '#818cf8' : '#666',
+                color: statusFilter === s ? '#818cf8' : '#64748b',
                 cursor: 'pointer',
               }}
             >
@@ -859,7 +859,7 @@ function RecordsView() {
       {(ingestRecords.isError || ingestAll.isError) && (
         <div style={{
           padding: '10px 14px', borderRadius: 6, marginBottom: 12,
-          background: '#1f0f0f', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
+          background: 'rgba(239,68,68,0.06)', border: '1px solid #3a1a1a', color: '#ef4444', fontSize: 12,
         }}>
           {ingestRecords.isError && `Ingest failed: ${ingestRecords.error instanceof Error ? ingestRecords.error.message : String(ingestRecords.error)}`}
           {ingestAll.isError && `Ingest failed: ${ingestAll.error instanceof Error ? ingestAll.error.message : String(ingestAll.error)}`}
@@ -877,18 +877,18 @@ function RecordsView() {
           </span>
           <button
             onClick={() => setIngestResult(null)}
-            style={{ background: 'none', border: 'none', color: '#666', cursor: 'pointer', fontSize: 16 }}
+            style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: 16 }}
           ><X size={16} /></button>
         </div>
       )}
 
       {(!records || records.length === 0) ? (
-        <div style={{ color: '#555', fontSize: 13, padding: 20, textAlign: 'center' }}>
+        <div style={{ color: '#475569', fontSize: 13, padding: 20, textAlign: 'center' }}>
           No records found. Import data from the Import tab.
         </div>
       ) : (
         <div style={{
-          border: '1px solid #1e1e2e', borderRadius: 8, overflow: 'hidden',
+          border: '1px solid #1e1e2e', borderRadius: 14, overflow: 'hidden',
         }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
@@ -902,12 +902,12 @@ function RecordsView() {
                     />
                   </th>
                 )}
-                <th style={{ padding: '8px', color: '#888', textAlign: 'left' }}>Address</th>
-                <th style={{ padding: '8px', color: '#888', textAlign: 'left' }}>City</th>
-                <th style={{ padding: '8px', color: '#888', textAlign: 'left' }}>Owner</th>
-                <th style={{ padding: '8px', color: '#888', textAlign: 'left' }}>Shutoff Date</th>
-                <th style={{ padding: '8px', color: '#888', textAlign: 'right' }}>Amount</th>
-                <th style={{ padding: '8px', color: '#888', textAlign: 'center' }}>Status</th>
+                <th style={{ padding: '8px', color: '#94a3b8', textAlign: 'left' }}>Address</th>
+                <th style={{ padding: '8px', color: '#94a3b8', textAlign: 'left' }}>City</th>
+                <th style={{ padding: '8px', color: '#94a3b8', textAlign: 'left' }}>Owner</th>
+                <th style={{ padding: '8px', color: '#94a3b8', textAlign: 'left' }}>Shutoff Date</th>
+                <th style={{ padding: '8px', color: '#94a3b8', textAlign: 'right' }}>Amount</th>
+                <th style={{ padding: '8px', color: '#94a3b8', textAlign: 'center' }}>Status</th>
               </tr>
             </thead>
             <tbody>
@@ -916,7 +916,7 @@ function RecordsView() {
                   key={rec.id}
                   style={{
                     borderTop: '1px solid #111118',
-                    background: selectedIds.has(rec.id) ? '#6366f110' : '#111118',
+                    background: selectedIds.has(rec.id) ? '#6366f110' : 'rgba(255,255,255,0.03)',
                   }}
                 >
                   {statusFilter === 'new' && (
@@ -928,7 +928,7 @@ function RecordsView() {
                       />
                     </td>
                   )}
-                  <td style={{ padding: '6px 8px', color: '#ccc' }}>{rec.service_address}</td>
+                  <td style={{ padding: '6px 8px', color: '#cbd5e1' }}>{rec.service_address}</td>
                   <td style={{ padding: '6px 8px', color: '#aaa' }}>
                     {[rec.city, rec.state].filter(Boolean).join(', ') || '-'}
                   </td>
