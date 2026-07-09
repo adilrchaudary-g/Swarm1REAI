@@ -273,7 +273,7 @@ function SpeakerAvatar({ name, side, volume }: {
 function CallVisualization({ sellerName, audioUrl, transcript }: {
   sellerName: string; audioUrl: string | null; transcript: string | null
 }) {
-  const audioRef = useRef<HTMLAudioElement>(null)
+  const audioRef = useRef<HTMLVideoElement>(null)
   const analyserRef = useRef<AnalyserNode | null>(null)
   const ctxRef = useRef<AudioContext | null>(null)
   const sourceRef = useRef<MediaElementAudioSourceNode | null>(null)
@@ -425,7 +425,7 @@ function CallVisualization({ sellerName, audioUrl, transcript }: {
         </div>
       )}
 
-      {audioUrl && <audio ref={audioRef} src={audioUrl} preload="auto" crossOrigin="anonymous" />}
+      {audioUrl && <video ref={audioRef} src={audioUrl} preload="auto" crossOrigin="anonymous" style={{ display: 'none' }} />}
     </div>
   )
 }

@@ -16,6 +16,9 @@ export type Permission =
   | 'action:log_call'
   | 'action:add_note'
   | 'action:upload_recording'
+  | 'view:schedule'
+  | 'view:activity'
+  | 'view:finances'
   | 'action:manage_leads'
   | 'action:manage_users'
   | '*'
@@ -23,8 +26,9 @@ export type Permission =
 export const CALLER_PERMISSIONS: Permission[] = [
   'view:call_list',
   'view:dial_mode',
-  'view:recordings',
   'view:own_kpi',
+  'view:kpi',
+  'view:schedule',
   'action:log_call',
   'action:add_note',
   'action:upload_recording',

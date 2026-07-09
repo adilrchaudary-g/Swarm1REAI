@@ -822,6 +822,9 @@ class HermesRuntime:
         self.orchestrator = AgentOrchestrator(self.store, self)
         self.orchestrator.start_scheduler()
 
+        from .agents.mega_orchestrator import MegaOrchestrator
+        self.mega = MegaOrchestrator(self.store, self)
+
     def _register_source_adapters(self) -> None:
         try:
             from lead_engine.sources import list_sources, get_adapter
@@ -955,6 +958,10 @@ class HermesRuntime:
                 if auth.startswith("Bearer "):
                     token = auth[7:]
                     return runtime.store.validate_session(token)
+                parsed = urlparse(self.path)
+                qs = parse_qs(parsed.query)
+                if "token" in qs:
+                    return runtime.store.validate_session(qs["token"][0])
                 return None
 
             def _require_auth(self) -> dict[str, Any] | None:
@@ -1022,17 +1029,135 @@ class HermesRuntime:
                     self._send_json(HTTPStatus.OK, commands)
                     return
 
+                # ── Schedule API (GET) ────────────────────────────────
+
+                if path == "/api/schedule":
+                    date_from = self._query_first(query, "date_from", "")
+                    date_to = self._query_first(query, "date_to", "")
+                    data = runtime.store.get_caller_availability(user["id"], date_from, date_to)
+                    self._send_json(HTTPStatus.OK, data)
+                    return
+
+                if path == "/api/schedule/all":
+                    if user["role"] != "admin":
+                        self._send_json(HTTPStatus.FORBIDDEN, {"error": "Admin only"})
+                        return
+                    date_from = self._query_first(query, "date_from", "")
+                    date_to = self._query_first(query, "date_to", "")
+                    data = runtime.store.get_all_caller_availability(date_from, date_to)
+                    self._send_json(HTTPStatus.OK, data)
+                    return
+
+                # ── Finances API (GET) ────────────────────────────────
+
+                if path == "/api/finances/summary":
+                    if user["role"] != "admin":
+                        self._send_json(HTTPStatus.FORBIDDEN, {"error": "Admin only"})
+                        return
+                    self._send_json(HTTPStatus.OK, runtime.store.get_finance_summary())
+                    return
+
+                if path == "/api/finances/expenses":
+                    if user["role"] != "admin":
+                        self._send_json(HTTPStatus.FORBIDDEN, {"error": "Admin only"})
+                        return
+                    self._send_json(HTTPStatus.OK, runtime.store.list_expenses())
+                    return
+
+                if path == "/api/finances/revenue":
+                    if user["role"] != "admin":
+                        self._send_json(HTTPStatus.FORBIDDEN, {"error": "Admin only"})
+                        return
+                    self._send_json(HTTPStatus.OK, runtime.store.list_revenue())
+                    return
+
+                if path == "/api/finances/payroll":
+                    if user["role"] != "admin":
+                        self._send_json(HTTPStatus.FORBIDDEN, {"error": "Admin only"})
+                        return
+                    week = self._query_first(query, "week_start")
+                    self._send_json(HTTPStatus.OK, runtime.store.list_payroll(week))
+                    return
+
+                # ── Activity Tracking API (GET) ──────────────────────
+
+                if path == "/api/activity/live-status":
+                    self._send_json(HTTPStatus.OK, runtime.store.get_caller_live_status())
+                    return
+
+                if path == "/api/activity/tracker":
+                    target_id = int(self._query_first(query, "user_id", "0"))
+                    date = self._query_first(query, "date", "")
+                    if user["role"] != "admin" and target_id and target_id != user["id"]:
+                        self._send_json(HTTPStatus.FORBIDDEN, {"error": "Can only view own activity"})
+                        return
+                    uid = target_id or user["id"]
+                    self._send_json(HTTPStatus.OK, runtime.store.get_caller_activity(uid, date))
+                    return
+
+                if path == "/api/activity/summary":
+                    date_from = self._query_first(query, "date_from", "")
+                    date_to = self._query_first(query, "date_to", "")
+                    target_id = int(self._query_first(query, "user_id", "0")) or None
+                    if user["role"] != "admin" and target_id and target_id != user["id"]:
+                        self._send_json(HTTPStatus.FORBIDDEN, {"error": "Can only view own activity"})
+                        return
+                    if user["role"] != "admin":
+                        target_id = user["id"]
+                    self._send_json(HTTPStatus.OK, runtime.store.get_activity_summary(date_from, date_to, target_id))
+                    return
+
+                if path == "/api/activity/integrity":
+                    if user["role"] != "admin":
+                        self._send_json(HTTPStatus.FORBIDDEN, {"error": "Admin only"})
+                        return
+                    date_from = self._query_first(query, "date_from", "")
+                    date_to = self._query_first(query, "date_to", "")
+                    self._send_json(HTTPStatus.OK, runtime.store.get_integrity_report(date_from, date_to))
+                    return
+
+                if path == "/api/activity/daily-logs":
+                    date_from = self._query_first(query, "date_from", "")
+                    date_to = self._query_first(query, "date_to", "")
+                    target_id = int(self._query_first(query, "user_id", "0")) or None
+                    if user["role"] != "admin":
+                        target_id = user["id"]
+                    self._send_json(HTTPStatus.OK, runtime.store.get_daily_logs(target_id, date_from, date_to))
+                    return
+
                 # ── Dashboard API (GET) ──────────────────────────────
+
+                if path == "/api/leads/assignments":
+                    if user["role"] != "admin":
+                        self._send_json(HTTPStatus.FORBIDDEN, {"error": "Admin only"})
+                        return
+                    self._send_json(HTTPStatus.OK, runtime.store.get_assignment_stats())
+                    return
+
+                if path == "/api/leads/assignments/compare":
+                    if user["role"] != "admin":
+                        self._send_json(HTTPStatus.FORBIDDEN, {"error": "Admin only"})
+                        return
+                    ids_raw = self._query_first(query, "caller_ids", "")
+                    caller_ids = [int(x) for x in ids_raw.split(",") if x.strip()]
+                    self._send_json(HTTPStatus.OK, runtime.store.get_assignment_comparison(caller_ids))
+                    return
 
                 if path == "/api/leads":
                     exclude_raw = self._query_first(query, "exclude_statuses")
                     exclude_list = [s.strip() for s in exclude_raw.split(",") if s.strip()] if exclude_raw else None
+                    assigned_filter = None
+                    if user["role"] == "caller":
+                        assigned_filter = user["id"]
+                    elif self._query_first(query, "assigned_to"):
+                        assigned_filter = int(self._query_first(query, "assigned_to"))
                     data = runtime.store.list_all_leads(
                         status=self._query_first(query, "status"),
                         exclude_statuses=exclude_list,
                         tier=self._query_first(query, "tier"),
                         source=self._query_first(query, "source"),
                         persona=self._query_first(query, "persona"),
+                        assigned_to=assigned_filter,
                         limit=int(self._query_first(query, "limit", "100")),
                         offset=int(self._query_first(query, "offset", "0")),
                     )
@@ -1447,6 +1572,19 @@ class HermesRuntime:
                             self.wfile.write(chunk)
                     return
 
+                # ── Chat / Mega-Agent (GET) ───────────────────────
+                if path == "/api/chat/conversations":
+                    convos = runtime.store.list_conversations(user["id"])
+                    self._send_json(HTTPStatus.OK, convos)
+                    return
+
+                m = re.match(r"^/api/chat/conversations/(\d+)$", path)
+                if m:
+                    cid = int(m.group(1))
+                    messages = runtime.store.get_conversation_messages(cid)
+                    self._send_json(HTTPStatus.OK, {"conversation_id": cid, "messages": messages})
+                    return
+
                 # ── Agents (GET) ──────────────────────────────────
                 if path == "/api/agents":
                     self._send_json(HTTPStatus.OK, runtime.store.list_agent_definitions())
@@ -1687,6 +1825,118 @@ class HermesRuntime:
                     if not user:
                         return
 
+                # ── Schedule API (POST) ───────────────────────────────
+
+                if path == "/api/schedule":
+                    body = self._read_json()
+                    target_user_id = user["id"]
+                    if user["role"] == "admin" and body.get("user_id"):
+                        target_user_id = int(body["user_id"])
+                    entries = body.get("entries", [])
+                    result = runtime.store.bulk_upsert_caller_availability(target_user_id, entries)
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                if path == "/api/schedule/delete":
+                    body = self._read_json()
+                    target_user_id = user["id"]
+                    if user["role"] == "admin" and body.get("user_id"):
+                        target_user_id = int(body["user_id"])
+                    result = runtime.store.delete_caller_availability(
+                        target_user_id, body.get("date", ""), body.get("start_time"),
+                    )
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                # ── Lead Assignment API (POST) ────────────────────────
+
+                if path == "/api/leads/assignments/auto":
+                    if user["role"] != "admin":
+                        self._send_json(HTTPStatus.FORBIDDEN, {"error": "Admin only"})
+                        return
+                    body = self._read_json()
+                    caller_ids = body.get("caller_ids", [])
+                    count = int(body.get("count_per_caller", 1000))
+                    result = runtime.store.auto_assign_lists(caller_ids, count)
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                if path == "/api/leads/assignments/assign":
+                    if user["role"] != "admin":
+                        self._send_json(HTTPStatus.FORBIDDEN, {"error": "Admin only"})
+                        return
+                    body = self._read_json()
+                    result = runtime.store.assign_leads_to_caller(
+                        int(body["user_id"]), body.get("lead_ids", []),
+                    )
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                if path == "/api/leads/assignments/unassign":
+                    if user["role"] != "admin":
+                        self._send_json(HTTPStatus.FORBIDDEN, {"error": "Admin only"})
+                        return
+                    body = self._read_json()
+                    result = runtime.store.unassign_leads(body.get("lead_ids", []))
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                # ── Activity Tracking API (POST) ─────────────────────
+
+                if path == "/api/activity/daily-log":
+                    body = self._read_json()
+                    target_id = user["id"]
+                    if user["role"] == "admin" and body.get("user_id"):
+                        target_id = int(body["user_id"])
+                    result = runtime.store.submit_daily_log(
+                        target_id,
+                        body.get("log_date", ""),
+                        float(body.get("hours_claimed", 0)),
+                        int(body.get("dials_claimed", 0)),
+                        int(body.get("leads_set_claimed", 0)),
+                        body.get("notes"),
+                    )
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                # ── Finances API (POST) ───────────────────────────────
+
+                if path == "/api/finances/expenses":
+                    if user["role"] != "admin":
+                        self._send_json(HTTPStatus.FORBIDDEN, {"error": "Admin only"})
+                        return
+                    body = self._read_json()
+                    if body.get("_delete"):
+                        result = runtime.store.delete_expense(int(body["id"]))
+                    else:
+                        result = runtime.store.upsert_expense(**body)
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                if path == "/api/finances/revenue":
+                    if user["role"] != "admin":
+                        self._send_json(HTTPStatus.FORBIDDEN, {"error": "Admin only"})
+                        return
+                    body = self._read_json()
+                    if body.get("_delete"):
+                        result = runtime.store.delete_revenue(int(body["id"]))
+                    else:
+                        result = runtime.store.add_revenue(**body)
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                if path == "/api/finances/payroll":
+                    if user["role"] != "admin":
+                        self._send_json(HTTPStatus.FORBIDDEN, {"error": "Admin only"})
+                        return
+                    body = self._read_json()
+                    if body.get("_mark_paid"):
+                        result = runtime.store.mark_payroll_paid(int(body["id"]))
+                    else:
+                        result = runtime.store.upsert_payroll(**body)
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
                 if path in {"/bridge/events", "/bridge/heartbeat"}:
                     payload = self._read_json()
                     export_csv_path = self.headers.get("X-Export-CSV-Path")
@@ -1759,6 +2009,7 @@ class HermesRuntime:
                         body.get("disposition", "unknown"),
                         body.get("notes"),
                         body.get("phone_number"),
+                        caller_id=user["id"] if user else None,
                     )
                     self._send_json(HTTPStatus.OK, result)
                     return
@@ -2354,6 +2605,41 @@ class HermesRuntime:
                         self._send_json(HTTPStatus.OK, {"status": "multiple" if matches else "no_match", "matches": matches})
                     return
 
+                # ── Chat / Mega-Agent (POST) ──────────────────────
+                if path == "/api/chat":
+                    body = self._read_json()
+                    message = body.get("message", "").strip()
+                    if not message:
+                        self._send_json(HTTPStatus.BAD_REQUEST, {"error": "message required"})
+                        return
+                    conversation_id = body.get("conversation_id")
+                    result = runtime.mega.handle_message(
+                        message=message,
+                        user=user,
+                        conversation_id=conversation_id,
+                    )
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                m = re.match(r"^/api/chat/confirm/(\d+)$", path)
+                if m:
+                    if user["role"] != "admin":
+                        self._send_json(HTTPStatus.FORBIDDEN, {"error": "Admin only"})
+                        return
+                    self._read_json()
+                    cid = int(m.group(1))
+                    result = runtime.mega.handle_confirmation(cid, confirmed=True, user=user)
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                m = re.match(r"^/api/chat/cancel/(\d+)$", path)
+                if m:
+                    self._read_json()
+                    cid = int(m.group(1))
+                    result = runtime.mega.handle_confirmation(cid, confirmed=False, user=user)
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
                 # ── Agents (POST) ─────────────────────────────────
                 m = re.match(r"^/api/agents/([a-z_]+)/run$", path)
                 if m:
@@ -2526,7 +2812,7 @@ class HermesRuntime:
         def _startup_check():
             import time
             time.sleep(5)
-            pending = runtime.store.pending_verification_stats()
+            pending = self.store.pending_verification_stats()
             if pending["total_pending"] > 0:
                 print(f"[startup] {pending['total_pending']} addresses pending PropStream verification")
 

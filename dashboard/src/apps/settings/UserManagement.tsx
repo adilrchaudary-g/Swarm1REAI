@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { UserPlus, Trash2, Shield, Phone, Check, X } from 'lucide-react'
+import { UserPlus, Trash2, Shield, Phone } from 'lucide-react'
 import { CALLER_PERMISSIONS, type Permission } from '../../auth/permissions'
 
 const API = '/api'
@@ -32,6 +32,9 @@ const ALL_PERMISSIONS: { perm: Permission; label: string; group: string }[] = [
   { perm: 'view:distressed', label: 'Distressed', group: 'Views' },
   { perm: 'view:sources', label: 'Sources', group: 'Views' },
   { perm: 'view:markets', label: 'Markets', group: 'Views' },
+  { perm: 'view:schedule', label: 'Schedule', group: 'Views' },
+  { perm: 'view:activity', label: 'Activity', group: 'Views' },
+  { perm: 'view:finances', label: 'Finances', group: 'Views' },
   { perm: 'view:underwriting', label: 'Underwriting', group: 'Views' },
   { perm: 'view:kpi', label: 'Full KPIs', group: 'Views' },
   { perm: 'view:agents', label: 'Agents', group: 'Views' },
@@ -58,7 +61,6 @@ export function UserManagement() {
   const [showCreate, setShowCreate] = useState(false)
   const [newUser, setNewUser] = useState({ username: '', display_name: '', password: '', role: 'caller' })
   const [selectedPerms, setSelectedPerms] = useState<Set<string>>(new Set(CALLER_PERMISSIONS))
-  const [editingId, setEditingId] = useState<number | null>(null)
 
   const { data: users = [] } = useQuery<UserRecord[]>({
     queryKey: ['users'],

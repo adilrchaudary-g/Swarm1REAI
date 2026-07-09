@@ -8,6 +8,9 @@ import { LeadGenApp } from './apps/lead-gen/LeadGenApp'
 import { UnderwritingApp } from './apps/underwriting/UnderwritingApp'
 import { KpiApp } from './apps/kpi/KpiApp'
 import { AgentsApp } from './apps/agents/AgentsApp'
+import { ScheduleApp } from './apps/schedule/ScheduleApp'
+import { FinancesApp } from './apps/finances/FinancesApp'
+import { ActivityApp } from './apps/activity/ActivityApp'
 import { UserManagement } from './apps/settings/UserManagement'
 
 const queryClient = new QueryClient({
@@ -31,6 +34,12 @@ function AppRouter() {
       return <KpiApp />
     case 'agents':
       return <AgentsApp />
+    case 'schedule':
+      return <ScheduleApp />
+    case 'activity':
+      return <ActivityApp />
+    case 'finances':
+      return <FinancesApp />
     case 'settings':
       return <UserManagement />
   }

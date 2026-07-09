@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { hermesClient } from '../../api/hermes-client'
-import type { KpiSummary, FollowUp, SourceRoi, TrackerDayPoint } from '../../api/types'
+import { useAuthStore } from '../../store/auth-store'
+import type { KpiSummary, FollowUp, SourceRoi, TrackerDayPoint, CallerActivity } from '../../api/types'
 
 const OUTCOMES = [
   { value: 'no_answer', label: 'No Answer', color: '#94a3b8' },
@@ -904,6 +905,17 @@ function FollowUpSection() {
 // ── Main KPI App ────────────────────────────────────────────
 
 export function KpiApp() {
+  const { user } = useAuthStore()
+  const isAdmin = user?.role === 'admin'
+
+  if (!isAdmin) {
+    return <CallerKpiView userId={user?.id ?? 0} />
+  }
+
+  return <AdminKpiView />
+}
+
+function AdminKpiView() {
   const { data: kpi, error: kpiError } = useQuery({
     queryKey: ['kpi-summary'],
     queryFn: hermesClient.kpi.summary,
@@ -961,6 +973,247 @@ export function KpiApp() {
       {/* Follow-ups */}
       <h3 style={{ color: '#cbd5e1', fontSize: 14, marginBottom: 12, marginTop: 8 }}>Follow-Ups</h3>
       <FollowUpSection />
+    </div>
+  )
+}
+
+// ── Caller KPI View ─────────────────────────────────────────
+
+function todayStr() {
+  return new Date().toISOString().slice(0, 10)
+}
+
+function weekAgoStr() {
+  const d = new Date()
+  d.setDate(d.getDate() - 7)
+  return d.toISOString().slice(0, 10)
+}
+
+function fmtTime(iso: string) {
+  try {
+    return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+  } catch { return iso }
+}
+
+function CallerKpiView({ userId }: { userId: number }) {
+  const queryClient = useQueryClient()
+  const today = todayStr()
+
+  const { data: activity } = useQuery<CallerActivity>({
+    queryKey: ['caller-kpi-activity', userId, today],
+    queryFn: () => hermesClient.activity.tracker(userId, today),
+    refetchInterval: 30_000,
+  })
+
+  const [form, setForm] = useState({
+    log_date: today, hours_claimed: '', dials_claimed: '', leads_set_claimed: '0', notes: '',
+  })
+
+  const { data: logs = [] } = useQuery({
+    queryKey: ['daily-logs', weekAgoStr(), today, userId],
+    queryFn: () => hermesClient.activity.dailyLogs(weekAgoStr(), today, userId),
+  })
+
+  const submitMutation = useMutation({
+    mutationFn: (data: { log_date: string; hours_claimed: number; dials_claimed: number; leads_set_claimed: number; notes?: string }) =>
+      hermesClient.activity.submitLog(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['daily-logs'] })
+      setForm({ log_date: today, hours_claimed: '', dials_claimed: '', leads_set_claimed: '0', notes: '' })
+    },
+  })
+
+  const inputStyle: React.CSSProperties = {
+    padding: '10px 12px',
+    background: 'rgba(255,255,255,0.04)',
+    border: '1px solid rgba(255,255,255,0.08)',
+    borderRadius: 8, color: '#e2e8f0', fontSize: 13,
+    outline: 'none', width: '100%', boxSizing: 'border-box',
+  }
+
+  return (
+    <div>
+      <h2 style={{ color: '#e2e8f0', fontSize: 20, marginBottom: 8 }}>My Stats</h2>
+      <p style={{ color: '#64748b', fontSize: 14, marginBottom: 24 }}>
+        Your call performance and daily log submission.
+      </p>
+
+      {/* Today's Stats */}
+      {activity && (
+        <div style={{
+          display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)',
+          gap: 12, marginBottom: 24,
+        }}>
+          <TrophyCard label="Dials Today" value={String(activity.total_calls)} color="#6366f1" glow={activity.total_calls >= 300} />
+          <TrophyCard label="Billable Hours" value={String(activity.billable_hours)} color="#22c55e" />
+          <TrophyCard
+            label="Active Time"
+            value={`${Math.round(activity.active_minutes)} min`}
+            color="#3b82f6"
+          />
+          <TrophyCard label="Dials/Hour" value={String(Math.round(activity.calls_per_hour))} color="#f59e0b" />
+        </div>
+      )}
+
+      {/* Sessions */}
+      {activity && activity.sessions.length > 0 && (
+        <div style={{
+          padding: 16, marginBottom: 24,
+          background: 'rgba(255,255,255,0.02)',
+          border: '1px solid rgba(255,255,255,0.05)',
+          borderRadius: 12,
+        }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 10, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+            Today's Sessions
+          </div>
+          {activity.sessions.map((s, i) => (
+            <div key={i} style={{
+              display: 'flex', alignItems: 'center', gap: 12, padding: '8px 0',
+              borderBottom: i < activity.sessions.length - 1 ? '1px solid rgba(255,255,255,0.04)' : 'none',
+            }}>
+              <div style={{
+                width: 26, height: 26, borderRadius: 6,
+                background: 'rgba(34,197,94,0.1)', color: '#22c55e',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 11, fontWeight: 700,
+              }}>
+                {i + 1}
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#e2e8f0' }}>
+                  {fmtTime(s.start)} — {fmtTime(s.end)}
+                </div>
+                <div style={{ fontSize: 11, color: '#64748b' }}>
+                  {s.calls} calls &middot; {Math.round(s.duration_min)} min
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Dispositions */}
+      {activity && activity.total_calls > 0 && (
+        <div style={{
+          display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 24,
+        }}>
+          {Object.entries(activity.disposition_counts).sort((a, b) => b[1] - a[1]).map(([disp, count]) => {
+            const colors: Record<string, { bg: string; text: string }> = {
+              interested: { bg: 'rgba(34,197,94,0.1)', text: '#4ade80' },
+              not_interested: { bg: 'rgba(239,68,68,0.1)', text: '#f87171' },
+              bad_number: { bg: 'rgba(239,68,68,0.08)', text: '#ef4444' },
+              voicemail: { bg: 'rgba(234,179,8,0.08)', text: '#eab308' },
+              no_answer: { bg: 'rgba(100,116,139,0.1)', text: '#94a3b8' },
+            }
+            const c = colors[disp] ?? { bg: 'rgba(255,255,255,0.04)', text: '#64748b' }
+            return (
+              <div key={disp} style={{
+                padding: '6px 12px', borderRadius: 8,
+                background: c.bg, color: c.text,
+                fontSize: 12, fontWeight: 600,
+              }}>
+                {disp.replace('_', ' ')} — {count}
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* ── Daily Log Form ── */}
+      <div style={{
+        padding: 20, marginBottom: 24,
+        background: 'linear-gradient(135deg, rgba(99,102,241,0.08), rgba(139,92,246,0.05))',
+        border: '2px solid rgba(99,102,241,0.25)',
+        borderRadius: 16,
+      }}>
+        <div style={{ fontSize: 16, fontWeight: 700, color: '#c7d2fe', marginBottom: 4 }}>
+          Submit Your Daily Log
+        </div>
+        <div style={{ fontSize: 12, color: '#818cf8', marginBottom: 16 }}>
+          Report your hours, dials, and leads at the end of your shift.
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
+          <div>
+            <label style={{ fontSize: 11, color: '#94a3b8', display: 'block', marginBottom: 4, fontWeight: 600 }}>Date</label>
+            <input type="date" value={form.log_date} onChange={e => setForm(f => ({ ...f, log_date: e.target.value }))} style={inputStyle} />
+          </div>
+          <div>
+            <label style={{ fontSize: 11, color: '#94a3b8', display: 'block', marginBottom: 4, fontWeight: 600 }}>Hours Worked</label>
+            <input placeholder="e.g. 4" type="number" step="0.5" value={form.hours_claimed} onChange={e => setForm(f => ({ ...f, hours_claimed: e.target.value }))} style={inputStyle} />
+          </div>
+          <div>
+            <label style={{ fontSize: 11, color: '#94a3b8', display: 'block', marginBottom: 4, fontWeight: 600 }}>Dials Made</label>
+            <input placeholder="e.g. 300" type="number" value={form.dials_claimed} onChange={e => setForm(f => ({ ...f, dials_claimed: e.target.value }))} style={inputStyle} />
+          </div>
+          <div>
+            <label style={{ fontSize: 11, color: '#94a3b8', display: 'block', marginBottom: 4, fontWeight: 600 }}>Leads Set</label>
+            <input placeholder="0" type="number" value={form.leads_set_claimed} onChange={e => setForm(f => ({ ...f, leads_set_claimed: e.target.value }))} style={inputStyle} />
+          </div>
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ fontSize: 11, color: '#94a3b8', display: 'block', marginBottom: 4, fontWeight: 600 }}>Notes (optional)</label>
+          <input placeholder="Anything to note about today's calls..." value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} style={inputStyle} />
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <button
+            onClick={() => submitMutation.mutate({
+              log_date: form.log_date,
+              hours_claimed: parseFloat(form.hours_claimed || '0'),
+              dials_claimed: parseInt(form.dials_claimed || '0'),
+              leads_set_claimed: parseInt(form.leads_set_claimed || '0'),
+              notes: form.notes || undefined,
+            })}
+            disabled={!form.hours_claimed && !form.dials_claimed}
+            style={{
+              padding: '10px 24px', border: 'none', borderRadius: 10,
+              background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: '#fff',
+              fontSize: 13, fontWeight: 700, cursor: 'pointer',
+              opacity: !form.hours_claimed && !form.dials_claimed ? 0.5 : 1,
+              transition: 'all 0.15s',
+            }}
+          >
+            {submitMutation.isPending ? 'Submitting...' : 'Submit Log'}
+          </button>
+        </div>
+        {submitMutation.isSuccess && (
+          <div style={{ marginTop: 10, fontSize: 12, color: '#4ade80', fontWeight: 600 }}>
+            Log submitted successfully.
+          </div>
+        )}
+      </div>
+
+      {/* Past Logs */}
+      {logs.length > 0 && (
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 10, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+            Your Recent Logs
+          </div>
+          <div style={{
+            background: 'rgba(255,255,255,0.02)',
+            border: '1px solid rgba(255,255,255,0.04)',
+            borderRadius: 12, overflow: 'hidden',
+          }}>
+            {logs.map((l: any) => (
+              <div key={l.id} style={{
+                padding: '12px 16px',
+                borderBottom: '1px solid rgba(255,255,255,0.04)',
+                display: 'flex', alignItems: 'center', gap: 12,
+              }}>
+                <div style={{ flex: 1 }}>
+                  <span style={{ fontSize: 12, color: '#94a3b8' }}>{l.log_date}</span>
+                  {l.notes && <span style={{ fontSize: 11, color: '#64748b', marginLeft: 10 }}>{l.notes}</span>}
+                </div>
+                <div style={{ display: 'flex', gap: 16, fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>
+                  <span style={{ color: '#22c55e' }}>{l.hours_claimed}h</span>
+                  <span style={{ color: '#6366f1' }}>{l.dials_claimed} dials</span>
+                  <span style={{ color: '#f59e0b' }}>{l.leads_set_claimed} leads</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

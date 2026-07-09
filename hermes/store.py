@@ -341,6 +341,7 @@ class HermesStore:
         tier: str | None = None,
         source: str | None = None,
         persona: str | None = None,
+        assigned_to: int | None = None,
         limit: int = 100,
         offset: int = 0,
         require_phone: bool = True,
@@ -369,6 +370,9 @@ class HermesStore:
             if persona:
                 clauses.append("l.persona_primary = ?")
                 params.append(persona)
+            if assigned_to is not None:
+                clauses.append("l.assigned_to = ?")
+                params.append(assigned_to)
             where = " AND ".join(clauses)
             rows = conn.execute(
                 f"""
@@ -501,13 +505,14 @@ class HermesStore:
         return result
 
     def log_call_attempt(
-        self, lead_id: str, disposition: str, notes: str | None = None, phone_number: str | None = None
+        self, lead_id: str, disposition: str, notes: str | None = None,
+        phone_number: str | None = None, caller_id: int | None = None,
     ) -> dict[str, Any]:
         called_at = now_iso()
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO call_attempts (lead_id, disposition, notes, called_at, phone_number) VALUES (?, ?, ?, ?, ?)",
-                (lead_id, disposition, notes, called_at, phone_number),
+                "INSERT INTO call_attempts (lead_id, disposition, notes, called_at, phone_number, caller_id) VALUES (?, ?, ?, ?, ?, ?)",
+                (lead_id, disposition, notes, called_at, phone_number, caller_id),
             )
             if disposition == "bad_number" and phone_number:
                 conn.execute(
@@ -1219,6 +1224,48 @@ class HermesStore:
                 "today_dials": today_dials,
                 "today_recordings": today_recordings,
             }
+
+    def get_caller_live_status(self) -> list[dict[str, Any]]:
+        self.initialize()
+        now = datetime.now(timezone.utc)
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        with self._connect() as conn:
+            callers = conn.execute(
+                "SELECT id, display_name FROM users WHERE role = 'caller' AND active = 1"
+            ).fetchall()
+            result = []
+            for c in callers:
+                cid = c["id"]
+                name = c["display_name"]
+                today_dials = conn.execute(
+                    "SELECT COUNT(*) as cnt FROM call_attempts WHERE caller_id = ? AND called_at >= ?",
+                    (cid, today_start),
+                ).fetchone()["cnt"]
+                last_call_row = conn.execute(
+                    "SELECT called_at FROM call_attempts WHERE caller_id = ? ORDER BY called_at DESC LIMIT 1",
+                    (cid,),
+                ).fetchone()
+                last_call = last_call_row["called_at"] if last_call_row else None
+                inactive_minutes = None
+                active = False
+                if last_call:
+                    try:
+                        last_dt = datetime.fromisoformat(last_call.replace("Z", "+00:00"))
+                        diff = (now - last_dt).total_seconds() / 60
+                        active = diff <= 15
+                        if not active:
+                            inactive_minutes = round(diff, 1)
+                    except Exception:
+                        pass
+                result.append({
+                    "user_id": cid,
+                    "name": name,
+                    "active": active,
+                    "today_dials": today_dials,
+                    "last_call": last_call,
+                    "inactive_minutes": inactive_minutes,
+                })
+            return result
 
     def get_daily_activity(self, days_back: int = 30) -> list[dict[str, Any]]:
         self.initialize()
@@ -1952,6 +1999,107 @@ class HermesStore:
         self._migrate_contracts(conn)
         self._migrate_bad_number_flag(conn)
         self._migrate_users(conn)
+        self._migrate_caller_availability(conn)
+        self._migrate_finances(conn)
+        self._migrate_activity_tracking(conn)
+        self._migrate_lead_assignments(conn)
+        self._migrate_conversations(conn)
+
+    def _migrate_finances(self, conn: sqlite3.Connection) -> None:
+        existing = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        if "expenses" not in existing:
+            conn.executescript("""
+                CREATE TABLE expenses (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    amount REAL NOT NULL,
+                    frequency TEXT NOT NULL DEFAULT 'monthly',
+                    active INTEGER NOT NULL DEFAULT 1,
+                    notes TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE revenue (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    deal_address TEXT,
+                    assignment_fee REAL NOT NULL,
+                    lead_id TEXT,
+                    caller_user_id INTEGER,
+                    closed_at TEXT NOT NULL,
+                    commission_paid INTEGER NOT NULL DEFAULT 0,
+                    notes TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (caller_user_id) REFERENCES users(id)
+                );
+                CREATE TABLE payroll (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    week_start TEXT NOT NULL,
+                    week_end TEXT NOT NULL,
+                    hours_worked REAL NOT NULL DEFAULT 0,
+                    hourly_rate REAL NOT NULL DEFAULT 2.0,
+                    base_pay REAL NOT NULL DEFAULT 0,
+                    commission REAL NOT NULL DEFAULT 0,
+                    total_pay REAL NOT NULL DEFAULT 0,
+                    paid INTEGER NOT NULL DEFAULT 0,
+                    paid_at TEXT,
+                    notes TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                    UNIQUE(user_id, week_start)
+                );
+                CREATE INDEX idx_payroll_user ON payroll(user_id);
+                CREATE INDEX idx_payroll_week ON payroll(week_start);
+                CREATE INDEX idx_revenue_closed ON revenue(closed_at);
+            """)
+            ts = now_iso()
+            conn.execute(
+                "INSERT INTO expenses (name, category, amount, frequency, active, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)",
+                ("PropStream", "software", 200.0, "monthly", ts, ts),
+            )
+            conn.execute(
+                "INSERT INTO expenses (name, category, amount, frequency, active, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)",
+                ("Twilio Autodialer", "software", 30.0, "monthly", ts, ts),
+            )
+
+    def _migrate_caller_availability(self, conn: sqlite3.Connection) -> None:
+        existing = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        if "caller_availability" not in existing:
+            conn.executescript("""
+                CREATE TABLE caller_availability (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    date TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'available',
+                    start_time TEXT,
+                    end_time TEXT,
+                    notes TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                    UNIQUE(user_id, date, start_time)
+                );
+                CREATE INDEX idx_avail_user_date ON caller_availability(user_id, date);
+            """)
+        if "users" in existing:
+            rows = conn.execute(
+                "SELECT id, permissions_json FROM users WHERE role = 'caller' AND active = 1"
+            ).fetchall()
+            for row in rows:
+                perms = json.loads(row[1] or "[]")
+                if "view:schedule" not in perms:
+                    perms.append("view:schedule")
+                    conn.execute(
+                        "UPDATE users SET permissions_json = ? WHERE id = ?",
+                        (json.dumps(perms), row[0]),
+                    )
 
     def _migrate_call_attempts_phone(self, conn: sqlite3.Connection) -> None:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(call_attempts)").fetchall()}
@@ -2163,11 +2311,254 @@ class HermesStore:
             return ["*"]
         if role == "caller":
             return [
-                "view:call_list", "view:dial_mode", "view:recordings",
-                "view:own_kpi", "action:log_call", "action:add_note",
-                "action:upload_recording",
+                "view:call_list", "view:dial_mode",
+                "view:own_kpi", "view:kpi", "view:schedule",
+                "action:log_call", "action:add_note", "action:upload_recording",
             ]
         return []
+
+    # ── Caller Availability ────────────────────────────────────────────
+
+    def bulk_upsert_caller_availability(
+        self, user_id: int, entries: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        ts = now_iso()
+        with self._connect() as conn:
+            dates = [e["date"] for e in entries]
+            if dates:
+                placeholders = ",".join("?" for _ in dates)
+                conn.execute(
+                    f"DELETE FROM caller_availability WHERE user_id = ? AND date IN ({placeholders})",
+                    [user_id, *dates],
+                )
+            for e in entries:
+                conn.execute(
+                    """INSERT INTO caller_availability
+                       (user_id, date, status, start_time, end_time, notes, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        user_id, e["date"], e.get("status", "available"),
+                        e.get("start_time"), e.get("end_time"),
+                        e.get("notes"), ts, ts,
+                    ),
+                )
+            return {"status": "ok", "upserted": len(entries)}
+
+    def get_caller_availability(
+        self, user_id: int, date_from: str, date_to: str
+    ) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT ca.*, u.display_name, u.username
+                   FROM caller_availability ca
+                   JOIN users u ON u.id = ca.user_id
+                   WHERE ca.user_id = ? AND ca.date >= ? AND ca.date <= ?
+                   ORDER BY ca.date, ca.start_time""",
+                (user_id, date_from, date_to),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_all_caller_availability(
+        self, date_from: str, date_to: str
+    ) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT ca.*, u.display_name, u.username, u.role
+                   FROM caller_availability ca
+                   JOIN users u ON u.id = ca.user_id
+                   WHERE ca.date >= ? AND ca.date <= ? AND u.active = 1
+                   ORDER BY u.display_name, ca.date, ca.start_time""",
+                (date_from, date_to),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def delete_caller_availability(
+        self, user_id: int, date: str, start_time: str | None = None
+    ) -> dict[str, Any]:
+        with self._connect() as conn:
+            if start_time:
+                cur = conn.execute(
+                    "DELETE FROM caller_availability WHERE user_id = ? AND date = ? AND start_time = ?",
+                    (user_id, date, start_time),
+                )
+            else:
+                cur = conn.execute(
+                    "DELETE FROM caller_availability WHERE user_id = ? AND date = ?",
+                    (user_id, date),
+                )
+            return {"status": "ok", "deleted": cur.rowcount}
+
+    # ── Finances ───────────────────────────────────────────────────────
+
+    def list_expenses(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT * FROM expenses ORDER BY category, name").fetchall()
+            return [dict(r) for r in rows]
+
+    def upsert_expense(self, **fields: Any) -> dict[str, Any]:
+        ts = now_iso()
+        with self._connect() as conn:
+            eid = fields.get("id")
+            if eid:
+                allowed = {"name", "category", "amount", "frequency", "active", "notes"}
+                updates, params = [], []
+                for k, v in fields.items():
+                    if k in allowed:
+                        updates.append(f"{k} = ?")
+                        params.append(v)
+                updates.append("updated_at = ?")
+                params.append(ts)
+                params.append(eid)
+                conn.execute(f"UPDATE expenses SET {', '.join(updates)} WHERE id = ?", params)
+                row = conn.execute("SELECT * FROM expenses WHERE id = ?", (eid,)).fetchone()
+                return dict(row) if row else {}
+            else:
+                cur = conn.execute(
+                    """INSERT INTO expenses (name, category, amount, frequency, active, notes, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (fields["name"], fields.get("category", "other"), fields["amount"],
+                     fields.get("frequency", "monthly"), fields.get("active", 1),
+                     fields.get("notes"), ts, ts),
+                )
+                return {"id": cur.lastrowid, **fields, "created_at": ts, "updated_at": ts}
+
+    def delete_expense(self, expense_id: int) -> dict[str, Any]:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM expenses WHERE id = ?", (expense_id,))
+            return {"status": "ok"}
+
+    def list_revenue(self, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT r.*, u.display_name as caller_name
+                   FROM revenue r
+                   LEFT JOIN users u ON u.id = r.caller_user_id
+                   ORDER BY r.closed_at DESC LIMIT ? OFFSET ?""",
+                (limit, offset),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def add_revenue(self, **fields: Any) -> dict[str, Any]:
+        ts = now_iso()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """INSERT INTO revenue (deal_address, assignment_fee, lead_id, caller_user_id,
+                   closed_at, notes, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (fields.get("deal_address"), fields["assignment_fee"],
+                 fields.get("lead_id"), fields.get("caller_user_id"),
+                 fields.get("closed_at", ts), fields.get("notes"), ts, ts),
+            )
+            return {"id": cur.lastrowid, **fields, "created_at": ts}
+
+    def delete_revenue(self, rev_id: int) -> dict[str, Any]:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM revenue WHERE id = ?", (rev_id,))
+            return {"status": "ok"}
+
+    def list_payroll(self, week_start: str | None = None) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            if week_start:
+                rows = conn.execute(
+                    """SELECT p.*, u.display_name as caller_name
+                       FROM payroll p JOIN users u ON u.id = p.user_id
+                       WHERE p.week_start = ? ORDER BY u.display_name""",
+                    (week_start,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT p.*, u.display_name as caller_name
+                       FROM payroll p JOIN users u ON u.id = p.user_id
+                       ORDER BY p.week_start DESC, u.display_name LIMIT 50""",
+                ).fetchall()
+            return [dict(r) for r in rows]
+
+    def upsert_payroll(self, **fields: Any) -> dict[str, Any]:
+        ts = now_iso()
+        user_id = fields["user_id"]
+        week_start = fields["week_start"]
+        week_end = fields.get("week_end", "")
+        hours = fields.get("hours_worked", 0)
+        rate = fields.get("hourly_rate", 2.0)
+        commission = fields.get("commission", 0)
+        base_pay = round(hours * rate, 2)
+        total_pay = round(base_pay + commission, 2)
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT id FROM payroll WHERE user_id = ? AND week_start = ?",
+                (user_id, week_start),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    """UPDATE payroll SET hours_worked=?, hourly_rate=?, base_pay=?,
+                       commission=?, total_pay=?, week_end=?, paid=?, paid_at=?,
+                       notes=?, updated_at=?
+                       WHERE id = ?""",
+                    (hours, rate, base_pay, commission, total_pay, week_end,
+                     fields.get("paid", 0), fields.get("paid_at"),
+                     fields.get("notes"), ts, existing["id"]),
+                )
+                return {"id": existing["id"], "status": "updated"}
+            else:
+                cur = conn.execute(
+                    """INSERT INTO payroll (user_id, week_start, week_end, hours_worked,
+                       hourly_rate, base_pay, commission, total_pay, paid, paid_at,
+                       notes, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (user_id, week_start, week_end, hours, rate, base_pay,
+                     commission, total_pay, fields.get("paid", 0),
+                     fields.get("paid_at"), fields.get("notes"), ts, ts),
+                )
+                return {"id": cur.lastrowid, "status": "created"}
+
+    def mark_payroll_paid(self, payroll_id: int) -> dict[str, Any]:
+        ts = now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE payroll SET paid = 1, paid_at = ?, updated_at = ? WHERE id = ?",
+                (ts, ts, payroll_id),
+            )
+            return {"status": "ok"}
+
+    def get_finance_summary(self) -> dict[str, Any]:
+        with self._connect() as conn:
+            expenses = conn.execute(
+                "SELECT SUM(amount) as total FROM expenses WHERE active = 1 AND frequency = 'monthly'"
+            ).fetchone()
+            monthly_overhead = expenses["total"] or 0
+
+            revenue = conn.execute(
+                "SELECT SUM(assignment_fee) as total, COUNT(*) as count FROM revenue"
+            ).fetchone()
+            total_revenue = revenue["total"] or 0
+            deal_count = revenue["count"] or 0
+
+            payroll_total = conn.execute(
+                "SELECT SUM(total_pay) as total FROM payroll"
+            ).fetchone()["total"] or 0
+
+            payroll_unpaid = conn.execute(
+                "SELECT SUM(total_pay) as total FROM payroll WHERE paid = 0"
+            ).fetchone()["total"] or 0
+
+            callers = conn.execute(
+                "SELECT COUNT(*) as cnt FROM users WHERE role = 'caller' AND active = 1"
+            ).fetchone()["cnt"] or 0
+            monthly_caller_cost = callers * 200.0
+
+            total_monthly_cost = monthly_overhead + monthly_caller_cost
+
+            return {
+                "monthly_overhead": round(monthly_overhead, 2),
+                "monthly_caller_cost": round(monthly_caller_cost, 2),
+                "total_monthly_cost": round(total_monthly_cost, 2),
+                "total_revenue": round(total_revenue, 2),
+                "deal_count": deal_count,
+                "total_payroll": round(payroll_total, 2),
+                "unpaid_payroll": round(payroll_unpaid, 2),
+                "active_callers": callers,
+                "profit": round(total_revenue - payroll_total, 2),
+            }
 
     def _migrate_evaluation_and_underwriting(self, conn: sqlite3.Connection) -> None:
         lead_cols = {row[1] for row in conn.execute("PRAGMA table_info(leads)").fetchall()}
@@ -6462,3 +6853,678 @@ Sincerely,
                     (key, value, now),
                 )
         return {"status": "ok", "updated": len(data)}
+
+    # ── Activity Tracking ─────────────────────────────────────────────
+
+    def _migrate_activity_tracking(self, conn: sqlite3.Connection) -> None:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(call_attempts)").fetchall()}
+        if "caller_id" not in cols:
+            conn.execute("ALTER TABLE call_attempts ADD COLUMN caller_id INTEGER")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_call_attempts_caller ON call_attempts(caller_id)")
+
+        existing = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        if "caller_daily_logs" not in existing:
+            conn.executescript("""
+                CREATE TABLE caller_daily_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    log_date TEXT NOT NULL,
+                    hours_claimed REAL NOT NULL DEFAULT 0,
+                    dials_claimed INTEGER NOT NULL DEFAULT 0,
+                    leads_set_claimed INTEGER NOT NULL DEFAULT 0,
+                    notes TEXT,
+                    submitted_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                    UNIQUE(user_id, log_date)
+                );
+                CREATE INDEX IF NOT EXISTS idx_daily_logs_user_date ON caller_daily_logs(user_id, log_date);
+            """)
+
+        # ensure callers have the view:activity permission
+        rows = conn.execute(
+            "SELECT id, permissions_json FROM users WHERE role = 'caller'"
+        ).fetchall()
+        for row in rows:
+            perms = json.loads(row[1] or "[]")
+            if "view:activity" not in perms:
+                perms.append("view:activity")
+                conn.execute(
+                    "UPDATE users SET permissions_json = ? WHERE id = ?",
+                    (json.dumps(perms), row[0]),
+                )
+
+    def submit_daily_log(
+        self, user_id: int, log_date: str, hours_claimed: float,
+        dials_claimed: int, leads_set_claimed: int, notes: str | None = None,
+    ) -> dict[str, Any]:
+        now = now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO caller_daily_logs
+                   (user_id, log_date, hours_claimed, dials_claimed, leads_set_claimed, notes, submitted_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(user_id, log_date) DO UPDATE SET
+                     hours_claimed = excluded.hours_claimed,
+                     dials_claimed = excluded.dials_claimed,
+                     leads_set_claimed = excluded.leads_set_claimed,
+                     notes = excluded.notes,
+                     updated_at = excluded.updated_at""",
+                (user_id, log_date, hours_claimed, dials_claimed, leads_set_claimed, notes, now, now),
+            )
+        return {"status": "ok", "log_date": log_date}
+
+    def get_daily_logs(
+        self, user_id: int | None = None, date_from: str = "", date_to: str = "",
+    ) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            if user_id:
+                rows = conn.execute(
+                    """SELECT dl.*, u.display_name as caller_name
+                       FROM caller_daily_logs dl
+                       JOIN users u ON u.id = dl.user_id
+                       WHERE dl.user_id = ? AND dl.log_date >= ? AND dl.log_date <= ?
+                       ORDER BY dl.log_date DESC""",
+                    (user_id, date_from, date_to),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT dl.*, u.display_name as caller_name
+                       FROM caller_daily_logs dl
+                       JOIN users u ON u.id = dl.user_id
+                       WHERE dl.log_date >= ? AND dl.log_date <= ?
+                       ORDER BY dl.log_date DESC""",
+                    (date_from, date_to),
+                ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_caller_activity(self, user_id: int, date: str) -> dict[str, Any]:
+        """Analyze call_attempts to build a minute-by-minute activity map for a caller on a given date."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT called_at, disposition, phone_number, lead_id
+                   FROM call_attempts
+                   WHERE caller_id = ? AND DATE(called_at) = ?
+                   ORDER BY called_at ASC""",
+                (user_id, date),
+            ).fetchall()
+
+            calls = [dict(r) for r in rows]
+            total_calls = len(calls)
+
+            if total_calls == 0:
+                return {
+                    "user_id": user_id,
+                    "date": date,
+                    "total_calls": 0,
+                    "active_minutes": 0,
+                    "billable_hours": 0,
+                    "hourly_breakdown": [],
+                    "sessions": [],
+                    "buckets": {},
+                    "gaps": [],
+                    "calls_per_hour": 0.0,
+                    "first_call": None,
+                    "last_call": None,
+                    "disposition_counts": {},
+                }
+
+            from datetime import datetime as dt
+
+            timestamps = []
+            for c in calls:
+                try:
+                    t = dt.fromisoformat(c["called_at"].replace("Z", "+00:00"))
+                    timestamps.append(t)
+                except (ValueError, AttributeError):
+                    continue
+
+            if not timestamps:
+                return {
+                    "user_id": user_id, "date": date, "total_calls": total_calls,
+                    "active_minutes": 0, "billable_hours": 0, "hourly_breakdown": [],
+                    "sessions": [], "buckets": {},
+                    "gaps": [], "calls_per_hour": 0.0,
+                    "first_call": None, "last_call": None, "disposition_counts": {},
+                }
+
+            SESSION_GAP_MINUTES = 10
+
+            sessions = []
+            current_session_start = timestamps[0]
+            current_session_end = timestamps[0]
+            current_session_calls = 1
+
+            for i in range(1, len(timestamps)):
+                gap = (timestamps[i] - current_session_end).total_seconds() / 60
+                if gap > SESSION_GAP_MINUTES:
+                    duration = max(1, (current_session_end - current_session_start).total_seconds() / 60)
+                    sessions.append({
+                        "start": current_session_start.isoformat(),
+                        "end": current_session_end.isoformat(),
+                        "duration_min": round(duration, 1),
+                        "calls": current_session_calls,
+                    })
+                    current_session_start = timestamps[i]
+                    current_session_end = timestamps[i]
+                    current_session_calls = 1
+                else:
+                    current_session_end = timestamps[i]
+                    current_session_calls += 1
+
+            duration = max(1, (current_session_end - current_session_start).total_seconds() / 60)
+            sessions.append({
+                "start": current_session_start.isoformat(),
+                "end": current_session_end.isoformat(),
+                "duration_min": round(duration, 1),
+                "calls": current_session_calls,
+            })
+
+            # Gaps between sessions
+            gaps = []
+            for i in range(1, len(sessions)):
+                prev_end = dt.fromisoformat(sessions[i - 1]["end"])
+                curr_start = dt.fromisoformat(sessions[i]["start"])
+                gap_min = (curr_start - prev_end).total_seconds() / 60
+                gaps.append({
+                    "after_session": i - 1,
+                    "gap_minutes": round(gap_min, 1),
+                    "from": prev_end.isoformat(),
+                    "to": curr_start.isoformat(),
+                })
+
+            # 5-minute buckets (0-287 across 24h)
+            buckets: dict[str, int] = {}
+            for t in timestamps:
+                bucket_key = f"{t.hour:02d}:{(t.minute // 5) * 5:02d}"
+                buckets[bucket_key] = buckets.get(bucket_key, 0) + 1
+
+            # Per-clock-hour breakdown with 100-dial billable threshold
+            BILLABLE_THRESHOLD = 100
+            hourly_dials: dict[int, int] = {}
+            for t in timestamps:
+                hourly_dials[t.hour] = hourly_dials.get(t.hour, 0) + 1
+
+            hourly_breakdown = []
+            billable_hours = 0
+            for hour in sorted(hourly_dials.keys()):
+                count = hourly_dials[hour]
+                billable = count >= BILLABLE_THRESHOLD
+                if billable:
+                    billable_hours += 1
+                hourly_breakdown.append({
+                    "hour": hour,
+                    "label": f"{hour}:00" if hour < 12 else f"{hour - 12 if hour > 12 else 12}:00 PM" if hour >= 12 else f"{hour}:00 AM",
+                    "dials": count,
+                    "billable": billable,
+                    "threshold": BILLABLE_THRESHOLD,
+                })
+
+            active_minutes = sum(s["duration_min"] for s in sessions)
+            span_minutes = max(1, (timestamps[-1] - timestamps[0]).total_seconds() / 60)
+            calls_per_hour = (total_calls / span_minutes) * 60 if span_minutes > 0 else 0
+
+            # Disposition breakdown
+            disp_counts: dict[str, int] = {}
+            for c in calls:
+                d = c.get("disposition", "unknown")
+                disp_counts[d] = disp_counts.get(d, 0) + 1
+
+            return {
+                "user_id": user_id,
+                "date": date,
+                "total_calls": total_calls,
+                "active_minutes": round(active_minutes, 1),
+                "billable_hours": billable_hours,
+                "hourly_breakdown": hourly_breakdown,
+                "sessions": sessions,
+                "buckets": buckets,
+                "gaps": gaps,
+                "calls_per_hour": round(calls_per_hour, 1),
+                "first_call": timestamps[0].isoformat(),
+                "last_call": timestamps[-1].isoformat(),
+                "disposition_counts": disp_counts,
+            }
+
+    def get_activity_summary(
+        self, date_from: str, date_to: str, user_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Per-caller, per-day summary of call activity vs self-reported logs."""
+        with self._connect() as conn:
+            user_filter = "AND ca.caller_id = ?" if user_id else ""
+            params: list[Any] = [date_from, date_to]
+            if user_id:
+                params.append(user_id)
+
+            rows = conn.execute(
+                f"""SELECT
+                      ca.caller_id as user_id,
+                      u.display_name as caller_name,
+                      DATE(ca.called_at) as call_date,
+                      COUNT(*) as actual_dials,
+                      MIN(ca.called_at) as first_call,
+                      MAX(ca.called_at) as last_call,
+                      COUNT(DISTINCT CASE WHEN ca.disposition = 'interested' THEN ca.lead_id END) as actual_leads_set
+                    FROM call_attempts ca
+                    JOIN users u ON u.id = ca.caller_id
+                    WHERE DATE(ca.called_at) >= ? AND DATE(ca.called_at) <= ? {user_filter}
+                      AND ca.caller_id IS NOT NULL
+                    GROUP BY ca.caller_id, DATE(ca.called_at)
+                    ORDER BY call_date DESC, caller_name""",
+                params,
+            ).fetchall()
+
+            BILLABLE_THRESHOLD = 100
+
+            results = []
+            for r in rows:
+                row = dict(r)
+                # Compute actual hours from first-to-last call span
+                try:
+                    from datetime import datetime as dt
+                    t1 = dt.fromisoformat(row["first_call"].replace("Z", "+00:00"))
+                    t2 = dt.fromisoformat(row["last_call"].replace("Z", "+00:00"))
+                    span_hours = (t2 - t1).total_seconds() / 3600
+                    row["actual_span_hours"] = round(span_hours, 2)
+                except (ValueError, AttributeError, TypeError):
+                    row["actual_span_hours"] = 0
+
+                # Compute billable hours: only clock hours with >= 100 dials count
+                hour_calls = conn.execute(
+                    """SELECT CAST(strftime('%H', called_at) AS INTEGER) as hr, COUNT(*) as cnt
+                       FROM call_attempts
+                       WHERE caller_id = ? AND DATE(called_at) = ?
+                       GROUP BY hr""",
+                    (row["user_id"], row["call_date"]),
+                ).fetchall()
+                billable = sum(1 for h in hour_calls if h["cnt"] >= BILLABLE_THRESHOLD)
+                non_billable = [{"hour": h["hr"], "dials": h["cnt"]} for h in hour_calls if h["cnt"] < BILLABLE_THRESHOLD]
+                row["billable_hours"] = billable
+                row["non_billable_hours"] = non_billable
+
+                # Look up self-reported log
+                log = conn.execute(
+                    "SELECT * FROM caller_daily_logs WHERE user_id = ? AND log_date = ?",
+                    (row["user_id"], row["call_date"]),
+                ).fetchone()
+
+                if log:
+                    log_d = dict(log)
+                    row["hours_claimed"] = log_d["hours_claimed"]
+                    row["dials_claimed"] = log_d["dials_claimed"]
+                    row["leads_set_claimed"] = log_d["leads_set_claimed"]
+                    row["log_notes"] = log_d.get("notes")
+                    row["log_submitted"] = True
+
+                    # Integrity flags
+                    flags = []
+                    if log_d["hours_claimed"] > billable + 0.5:
+                        flags.append("hours_exceed_billable")
+                    if log_d["hours_claimed"] > row["actual_span_hours"] + 0.5:
+                        flags.append("hours_inflated")
+                    if log_d["dials_claimed"] > row["actual_dials"] * 1.1 + 5:
+                        flags.append("dials_inflated")
+                    if log_d["hours_claimed"] > 0 and row["actual_dials"] == 0:
+                        flags.append("no_calls_found")
+                    if non_billable:
+                        flags.append("below_100_dials_hr")
+                    row["integrity_flags"] = flags
+                else:
+                    row["hours_claimed"] = None
+                    row["dials_claimed"] = None
+                    row["leads_set_claimed"] = None
+                    row["log_notes"] = None
+                    row["log_submitted"] = False
+                    row["integrity_flags"] = ["no_log_submitted"]
+
+                results.append(row)
+
+            return results
+
+    def get_integrity_report(self, date_from: str, date_to: str) -> dict[str, Any]:
+        """Admin overview: per-caller integrity scores over a date range."""
+        with self._connect() as conn:
+            callers = conn.execute(
+                "SELECT id, display_name FROM users WHERE role = 'caller' AND active = 1"
+            ).fetchall()
+
+        report = []
+        for caller in callers:
+            summary = self.get_activity_summary(date_from, date_to, user_id=caller["id"])
+            total_days = len(summary)
+            flagged_days = sum(1 for d in summary if d.get("integrity_flags"))
+            total_actual_dials = sum(d.get("actual_dials", 0) for d in summary)
+            total_claimed_dials = sum(d.get("dials_claimed", 0) or 0 for d in summary)
+            total_actual_hours = sum(d.get("actual_span_hours", 0) for d in summary)
+            total_claimed_hours = sum(d.get("hours_claimed", 0) or 0 for d in summary)
+            logs_submitted = sum(1 for d in summary if d.get("log_submitted"))
+
+            if total_days > 0 and total_claimed_hours > 0:
+                hour_accuracy = min(1.0, total_actual_hours / total_claimed_hours)
+            elif total_days > 0 and total_claimed_hours == 0:
+                hour_accuracy = 1.0
+            else:
+                hour_accuracy = None
+
+            if total_days > 0 and total_claimed_dials > 0:
+                dial_accuracy = min(1.0, total_actual_dials / total_claimed_dials)
+            elif total_days > 0 and total_claimed_dials == 0:
+                dial_accuracy = 1.0
+            else:
+                dial_accuracy = None
+
+            trust_score = None
+            if hour_accuracy is not None and dial_accuracy is not None:
+                trust_score = round((hour_accuracy * 0.6 + dial_accuracy * 0.4) * 100)
+
+            all_flags: dict[str, int] = {}
+            for d in summary:
+                for f in d.get("integrity_flags", []):
+                    all_flags[f] = all_flags.get(f, 0) + 1
+
+            report.append({
+                "user_id": caller["id"],
+                "caller_name": caller["display_name"],
+                "total_days_active": total_days,
+                "logs_submitted": logs_submitted,
+                "logs_missing": total_days - logs_submitted,
+                "flagged_days": flagged_days,
+                "total_actual_dials": total_actual_dials,
+                "total_claimed_dials": total_claimed_dials,
+                "total_actual_hours": round(total_actual_hours, 2),
+                "total_claimed_hours": round(total_claimed_hours, 2),
+                "hour_accuracy": round(hour_accuracy, 2) if hour_accuracy is not None else None,
+                "dial_accuracy": round(dial_accuracy, 2) if dial_accuracy is not None else None,
+                "trust_score": trust_score,
+                "flag_counts": all_flags,
+            })
+
+        return {
+            "date_from": date_from,
+            "date_to": date_to,
+            "callers": report,
+        }
+
+    # ── Lead Assignments ──────────────────────────────────────────────
+
+    def _migrate_lead_assignments(self, conn: sqlite3.Connection) -> None:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(leads)").fetchall()}
+        if "assigned_to" not in cols:
+            conn.execute("ALTER TABLE leads ADD COLUMN assigned_to INTEGER")
+            conn.execute("ALTER TABLE leads ADD COLUMN assigned_at TEXT")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_assigned ON leads(assigned_to)")
+
+    def assign_leads_to_caller(
+        self, user_id: int, lead_ids: list[str],
+    ) -> dict[str, Any]:
+        ts = now_iso()
+        with self._connect() as conn:
+            updated = 0
+            for lid in lead_ids:
+                cur = conn.execute(
+                    "UPDATE leads SET assigned_to = ?, assigned_at = ?, status = 'queued' WHERE lead_id = ?",
+                    (user_id, ts, lid),
+                )
+                updated += cur.rowcount
+        return {"status": "ok", "assigned": updated, "user_id": user_id}
+
+    def unassign_leads(self, lead_ids: list[str]) -> dict[str, Any]:
+        with self._connect() as conn:
+            updated = 0
+            for lid in lead_ids:
+                cur = conn.execute(
+                    "UPDATE leads SET assigned_to = NULL, assigned_at = NULL, status = 'enriched' WHERE lead_id = ?",
+                    (lid,),
+                )
+                updated += cur.rowcount
+        return {"status": "ok", "unassigned": updated}
+
+    def auto_assign_lists(
+        self, caller_ids: list[int], count_per_caller: int = 1000,
+    ) -> dict[str, Any]:
+        """Pull top N*len(callers) uncalled enriched leads, interleave-split across callers."""
+        total_needed = count_per_caller * len(caller_ids)
+        ts = now_iso()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT l.lead_id FROM leads l
+                   WHERE l.status = 'enriched'
+                     AND l.assigned_to IS NULL
+                     AND l.lead_id NOT IN (SELECT DISTINCT lead_id FROM call_attempts)
+                     AND EXISTS (SELECT 1 FROM owner_phones op WHERE op.owner_id = l.owner_id AND COALESCE(op.bad_number, 0) = 0)
+                   ORDER BY COALESCE(l.motivation_score, -1) DESC, l.updated_at DESC
+                   LIMIT ?""",
+                (total_needed,),
+            ).fetchall()
+
+            lead_ids = [r["lead_id"] for r in rows]
+            assignments: dict[int, list[str]] = {cid: [] for cid in caller_ids}
+
+            # Interleave to balance quality across callers
+            for i, lid in enumerate(lead_ids):
+                cid = caller_ids[i % len(caller_ids)]
+                assignments[cid].append(lid)
+
+            results = {}
+            for cid, lids in assignments.items():
+                for lid in lids:
+                    conn.execute(
+                        "UPDATE leads SET assigned_to = ?, assigned_at = ?, status = 'queued' WHERE lead_id = ?",
+                        (cid, ts, lid),
+                    )
+                results[cid] = len(lids)
+
+        return {"status": "ok", "assigned": results, "total": len(lead_ids)}
+
+    def get_assignment_stats(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT
+                     u.id as user_id, u.display_name as caller_name,
+                     COUNT(l.lead_id) as total_assigned,
+                     SUM(CASE WHEN l.status = 'queued' THEN 1 ELSE 0 END) as remaining,
+                     SUM(CASE WHEN l.status = 'contacted' THEN 1 ELSE 0 END) as contacted,
+                     SUM(CASE WHEN l.status = 'interested' THEN 1 ELSE 0 END) as interested,
+                     SUM(CASE WHEN l.status = 'not_interested' THEN 1 ELSE 0 END) as not_interested,
+                     SUM(CASE WHEN l.status = 'follow_up' THEN 1 ELSE 0 END) as follow_up,
+                     MIN(l.assigned_at) as assigned_since
+                   FROM users u
+                   LEFT JOIN leads l ON l.assigned_to = u.id
+                   WHERE u.role = 'caller' AND u.active = 1
+                   GROUP BY u.id
+                   ORDER BY u.display_name""",
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_assignment_comparison(self, caller_ids: list[int]) -> dict[str, Any]:
+        """Compare lead quality between assigned lists."""
+        with self._connect() as conn:
+            comparison = {}
+            for cid in caller_ids:
+                rows = conn.execute(
+                    """SELECT
+                         COUNT(*) as total,
+                         AVG(l.motivation_score) as avg_motivation,
+                         MIN(l.motivation_score) as min_motivation,
+                         MAX(l.motivation_score) as max_motivation,
+                         AVG(l.mao) as avg_mao,
+                         SUM(CASE WHEN l.persona_primary IS NOT NULL THEN 1 ELSE 0 END) as has_persona,
+                         SUM(CASE WHEN l.persona_primary = 'Pre-Foreclosure' THEN 1 ELSE 0 END) as pre_foreclosure,
+                         SUM(CASE WHEN l.persona_primary = 'Tired Landlord' THEN 1 ELSE 0 END) as tired_landlord,
+                         SUM(CASE WHEN l.persona_primary = 'Tired Homeowner' THEN 1 ELSE 0 END) as tired_homeowner,
+                         SUM(CASE WHEN l.persona_primary = 'Code Violation' THEN 1 ELSE 0 END) as code_violation,
+                         SUM(CASE WHEN l.persona_primary = 'Probate Heir' THEN 1 ELSE 0 END) as probate_heir,
+                         COUNT(DISTINCT p.address_state) as states,
+                         COUNT(DISTINCT p.address_zip) as zip_codes
+                       FROM leads l
+                       JOIN properties p ON p.property_id = l.property_id
+                       WHERE l.assigned_to = ?""",
+                    (cid,),
+                ).fetchone()
+                user = conn.execute("SELECT display_name FROM users WHERE id = ?", (cid,)).fetchone()
+                d = dict(rows)
+                d["caller_name"] = user["display_name"] if user else f"User {cid}"
+                d["user_id"] = cid
+
+                # State distribution
+                states = conn.execute(
+                    """SELECT p.address_state, COUNT(*) as cnt
+                       FROM leads l JOIN properties p ON p.property_id = l.property_id
+                       WHERE l.assigned_to = ?
+                       GROUP BY p.address_state ORDER BY cnt DESC""",
+                    (cid,),
+                ).fetchall()
+                d["state_distribution"] = {r["address_state"]: r["cnt"] for r in states}
+
+                comparison[cid] = d
+
+        return comparison
+
+    # ── Conversations (Mega-Agent Orchestrator) ──────────────────────────
+
+    def _migrate_conversations(self, conn: sqlite3.Connection) -> None:
+        existing = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        if "conversations" not in existing:
+            conn.executescript("""
+                CREATE TABLE conversations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    title TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (user_id) REFERENCES users(id)
+                );
+
+                CREATE TABLE conversation_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    conversation_id INTEGER NOT NULL,
+                    role TEXT NOT NULL,
+                    agent_type TEXT,
+                    content TEXT NOT NULL,
+                    metadata_json TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (conversation_id) REFERENCES conversations(id)
+                );
+
+                CREATE INDEX idx_conv_user ON conversations(user_id);
+                CREATE INDEX idx_msg_conv ON conversation_messages(conversation_id);
+            """)
+        if "pending_confirmations" not in existing:
+            conn.execute("""
+                CREATE TABLE pending_confirmations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    conversation_id INTEGER NOT NULL,
+                    agent_type TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    params_json TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_at TEXT NOT NULL,
+                    resolved_at TEXT,
+                    FOREIGN KEY (conversation_id) REFERENCES conversations(id)
+                )
+            """)
+
+    def create_conversation(self, user_id: int, title: str | None = None) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO conversations (user_id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                (user_id, title, now, now),
+            )
+            return cur.lastrowid  # type: ignore[return-value]
+
+    def add_conversation_message(
+        self, conversation_id: int, role: str, content: str,
+        agent_type: str | None = None, metadata: dict | None = None,
+    ) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """INSERT INTO conversation_messages
+                   (conversation_id, role, agent_type, content, metadata_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (conversation_id, role, agent_type, content,
+                 json.dumps(metadata) if metadata else None, now),
+            )
+            conn.execute(
+                "UPDATE conversations SET updated_at = ? WHERE id = ?",
+                (now, conversation_id),
+            )
+            return cur.lastrowid  # type: ignore[return-value]
+
+    def get_conversation_messages(
+        self, conversation_id: int, limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT * FROM conversation_messages
+                   WHERE conversation_id = ?
+                   ORDER BY created_at ASC LIMIT ?""",
+                (conversation_id, limit),
+            ).fetchall()
+            results = []
+            for r in rows:
+                d = dict(r)
+                if d.get("metadata_json"):
+                    try:
+                        d["metadata"] = json.loads(d["metadata_json"])
+                    except (json.JSONDecodeError, TypeError):
+                        d["metadata"] = None
+                else:
+                    d["metadata"] = None
+                results.append(d)
+            return results
+
+    def list_conversations(self, user_id: int, limit: int = 20) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT c.*,
+                   (SELECT COUNT(*) FROM conversation_messages WHERE conversation_id = c.id) as message_count
+                   FROM conversations c
+                   WHERE c.user_id = ?
+                   ORDER BY c.updated_at DESC LIMIT ?""",
+                (user_id, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def create_pending_confirmation(
+        self, conversation_id: int, agent_type: str,
+        action: str, params: dict, description: str,
+    ) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """INSERT INTO pending_confirmations
+                   (conversation_id, agent_type, action, params_json, description, status, created_at)
+                   VALUES (?, ?, ?, ?, ?, 'pending', ?)""",
+                (conversation_id, agent_type, action, json.dumps(params), description, now),
+            )
+            return cur.lastrowid  # type: ignore[return-value]
+
+    def get_pending_confirmation(self, confirmation_id: int) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM pending_confirmations WHERE id = ? AND status = 'pending'",
+                (confirmation_id,),
+            ).fetchone()
+            if not row:
+                return None
+            d = dict(row)
+            try:
+                d["params"] = json.loads(d["params_json"])
+            except (json.JSONDecodeError, TypeError):
+                d["params"] = {}
+            return d
+
+    def resolve_pending_confirmation(self, confirmation_id: int, status: str) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE pending_confirmations SET status = ?, resolved_at = ? WHERE id = ?",
+                (status, now, confirmation_id),
+            )

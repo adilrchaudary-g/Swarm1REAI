@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { X, FileSignature } from 'lucide-react'
 import { hermesClient } from '../../../api/hermes-client'
 import { useLeadStore } from '../../../store/lead-store'
+import { useAuthStore } from '../../../store/auth-store'
 import { DialMode } from './DialMode'
 import { ContractWizard } from '../../contracts/ContractWizard'
 import type { Lead } from '../../../api/types'
@@ -20,6 +21,11 @@ const STATUS_FILTERS = [
   { value: 'contacted', label: 'Contacted' },
   { value: 'interested', label: 'Interested' },
   { value: 'follow_up', label: 'Follow-Up' },
+]
+
+const CALLER_STATUS_FILTERS = [
+  { value: 'queued', label: 'Queued' },
+  { value: 'interested', label: 'My Interested' },
 ]
 
 const DISPOSITIONS = [
@@ -40,12 +46,14 @@ function LeadRow({
   isActive,
   isSelected,
   onToggleSelect,
+  hideCheckbox,
 }: {
   lead: Lead
   index: number
   isActive: boolean
   isSelected: boolean
   onToggleSelect: (leadId: string) => void
+  hideCheckbox?: boolean
 }) {
   const setActiveLead = useLeadStore((s) => s.setActiveLead)
   const tier = lead.motivation_tier || ''
@@ -59,14 +67,16 @@ function LeadRow({
         background: isActive ? 'rgba(99,102,241,0.12)' : isSelected ? '#16163a' : 'transparent',
       }}
     >
-      <td style={{ padding: '10px 8px', textAlign: 'center' }}>
-        <input
-          type="checkbox"
-          checked={isSelected}
-          onChange={() => onToggleSelect(lead.lead_id)}
-          style={{ cursor: 'pointer', accentColor: '#6366f1' }}
-        />
-      </td>
+      {!hideCheckbox && (
+        <td style={{ padding: '10px 8px', textAlign: 'center' }}>
+          <input
+            type="checkbox"
+            checked={isSelected}
+            onChange={() => onToggleSelect(lead.lead_id)}
+            style={{ cursor: 'pointer', accentColor: '#6366f1' }}
+          />
+        </td>
+      )}
       <td onClick={() => setActiveLead(lead)} style={{ padding: '10px 12px', color: '#cbd5e1', fontSize: 13 }}>{index + 1}</td>
       <td onClick={() => setActiveLead(lead)} style={{ padding: '10px 12px', color: '#e2e8f0', fontSize: 13 }}>
         {lead.address_street || lead.address_full || '—'}
@@ -97,7 +107,7 @@ function LeadRow({
   )
 }
 
-function DetailPanel({ lead }: { lead: Lead }) {
+function DetailPanel({ lead, isCaller }: { lead: Lead; isCaller?: boolean }) {
   const queryClient = useQueryClient()
   const setActiveLead = useLeadStore((s) => s.setActiveLead)
   const [note, setNote] = useState('')
@@ -160,37 +170,39 @@ function DetailPanel({ lead }: { lead: Lead }) {
       <p style={{ color: '#94a3b8', fontSize: 13, margin: '0 0 4px' }}>{lead.owner_name}</p>
       <p style={{ fontSize: 11, color: '#475569', margin: '0 0 16px' }}>Status: <span style={{ color: '#6366f1' }}>{lead.status}</span></p>
 
-      {/* Status transition buttons */}
-      <div style={{ marginBottom: 16 }}>
-        <div style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase', marginBottom: 6 }}>Actions</div>
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          {canQueue && (
+      {/* Status transition buttons — admin only */}
+      {!isCaller && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase', marginBottom: 6 }}>Actions</div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {canQueue && (
+              <button
+                onClick={() => updateStatus.mutate({ status: 'queued', reason: 'Moved to queue from detail panel' })}
+                disabled={updateStatus.isPending}
+                style={{ ...btnBase, color: '#22c55e', background: '#22c55e18', opacity: updateStatus.isPending ? 0.5 : 1 }}
+              >{updateStatus.isPending ? 'Moving...' : 'Move to Queue'}</button>
+            )}
+            {canRemoveFromQueue && (
+              <button
+                onClick={() => updateStatus.mutate({ status: 'new', reason: 'Removed from queue' })}
+                disabled={updateStatus.isPending}
+                style={{ ...btnBase, color: '#f97316', background: '#f9731618', opacity: updateStatus.isPending ? 0.5 : 1 }}
+              >{updateStatus.isPending ? 'Removing...' : 'Remove from Queue'}</button>
+            )}
+            {canArchive && (
+              <button
+                onClick={() => updateStatus.mutate({ status: 'archived', reason: 'Archived from detail panel' })}
+                disabled={updateStatus.isPending}
+                style={{ ...btnBase, color: '#ef4444', background: '#ef444418', opacity: updateStatus.isPending ? 0.5 : 1 }}
+              >{updateStatus.isPending ? 'Archiving...' : 'Archive'}</button>
+            )}
             <button
-              onClick={() => updateStatus.mutate({ status: 'queued', reason: 'Moved to queue from detail panel' })}
-              disabled={updateStatus.isPending}
-              style={{ ...btnBase, color: '#22c55e', background: '#22c55e18', opacity: updateStatus.isPending ? 0.5 : 1 }}
-            >{updateStatus.isPending ? 'Moving...' : 'Move to Queue'}</button>
-          )}
-          {canRemoveFromQueue && (
-            <button
-              onClick={() => updateStatus.mutate({ status: 'new', reason: 'Removed from queue' })}
-              disabled={updateStatus.isPending}
-              style={{ ...btnBase, color: '#f97316', background: '#f9731618', opacity: updateStatus.isPending ? 0.5 : 1 }}
-            >{updateStatus.isPending ? 'Removing...' : 'Remove from Queue'}</button>
-          )}
-          {canArchive && (
-            <button
-              onClick={() => updateStatus.mutate({ status: 'archived', reason: 'Archived from detail panel' })}
-              disabled={updateStatus.isPending}
-              style={{ ...btnBase, color: '#ef4444', background: '#ef444418', opacity: updateStatus.isPending ? 0.5 : 1 }}
-            >{updateStatus.isPending ? 'Archiving...' : 'Archive'}</button>
-          )}
-          <button
-            onClick={() => setShowContractWizard(true)}
-            style={{ ...btnBase, color: '#a78bfa', background: '#a78bfa18', display: 'flex', alignItems: 'center', gap: 4 }}
-          ><FileSignature size={12} /> Generate Contract</button>
+              onClick={() => setShowContractWizard(true)}
+              style={{ ...btnBase, color: '#a78bfa', background: '#a78bfa18', display: 'flex', alignItems: 'center', gap: 4 }}
+            ><FileSignature size={12} /> Generate Contract</button>
+          </div>
         </div>
-      </div>
+      )}
 
       {showContractWizard && (
         <ContractWizard lead={lead} onClose={() => setShowContractWizard(false)} />
@@ -323,7 +335,9 @@ function DetailPanel({ lead }: { lead: Lead }) {
 // statusPulse keyframe is in index.css
 
 export function CallList() {
-  const [statusFilter, setStatusFilter] = useState('')
+  const { user, isAdmin } = useAuthStore()
+  const isCaller = user?.role === 'caller'
+  const [statusFilter, setStatusFilter] = useState(isCaller ? 'queued' : '')
   const [dialMode, setDialMode] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [bulkResult, setBulkResult] = useState<string | null>(null)
@@ -342,6 +356,7 @@ export function CallList() {
   })
 
   const activeLead = useLeadStore((s) => s.activeLead)
+  const activeStatusFilters = isCaller ? CALLER_STATUS_FILTERS : STATUS_FILTERS
 
   const bulkUpdate = useMutation({
     mutationFn: ({ status, reason }: { status: string; reason?: string }) =>
@@ -388,8 +403,12 @@ export function CallList() {
 
   const readyLeads = useMemo(() => {
     if (!leads) return []
-    return leads.filter((l) => l.callable_phones.length > 0 || (l.phone_numbers && l.phone_numbers.length > 0))
-  }, [leads])
+    let result = leads.filter((l) => l.callable_phones.length > 0 || (l.phone_numbers && l.phone_numbers.length > 0))
+    if (isCaller && statusFilter === 'interested' && user) {
+      result = result.filter((l) => (l as any).assigned_to === user.id)
+    }
+    return result
+  }, [leads, isCaller, statusFilter, user])
 
   const sourceGroups = useMemo(() => {
     if (!readyLeads.length) return new Map<string, number>()
@@ -496,8 +515,8 @@ export function CallList() {
           </div>
         </div>
 
-        {/* Source filter tabs */}
-        {sourceGroups.size > 0 && (
+        {/* Source filter tabs — admin only */}
+        {!isCaller && sourceGroups.size > 0 && (
           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 10 }}>
             <button
               onClick={() => setSourceFilter('')}
@@ -525,7 +544,7 @@ export function CallList() {
 
         {/* Status filter bar */}
         <div style={{ display: 'flex', gap: 4, marginBottom: 12, flexWrap: 'wrap' }}>
-          {STATUS_FILTERS.map((f) => (
+          {activeStatusFilters.map((f) => (
             <button
               key={f.value}
               onClick={() => { setStatusFilter(f.value); setSelectedIds(new Set()) }}
@@ -539,8 +558,8 @@ export function CallList() {
           ))}
         </div>
 
-        {/* Processing banner — auto-shows when leads are being skip-traced */}
-        {(leadsProcessing > 0 || pipelineRunning || pipelineOpen) && (
+        {/* Processing banner — admin only */}
+        {!isCaller && (leadsProcessing > 0 || pipelineRunning || pipelineOpen) && (
           <div style={{
             marginBottom: 12, padding: '10px 14px',
             background: pipelineRunning ? '#6366f110' : '#f9731610',
@@ -627,8 +646,8 @@ export function CallList() {
           </div>
         )}
 
-        {/* Bulk action bar -- appears when leads are selected */}
-        {selectedIds.size > 0 && (
+        {/* Bulk action bar -- admin only */}
+        {!isCaller && selectedIds.size > 0 && (
           <div style={{
             display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12,
             padding: '8px 12px', background: 'rgba(99,102,241,0.12)', borderRadius: 14,
@@ -687,18 +706,20 @@ export function CallList() {
           <table style={{ width: '100%', borderCollapse: 'collapse', background: 'rgba(255,255,255,0.03)' }}>
             <thead>
               <tr style={{ borderBottom: '1px solid #2a2a3e' }}>
-                <th style={{ padding: '10px 8px', width: 36 }}>
-                  <input
-                    type="checkbox"
-                    checked={filtered.length > 0 && selectedIds.size === filtered.length}
-                    onChange={() => {
-                      if (selectedIds.size === filtered.length) selectNone()
-                      else selectAll()
-                    }}
-                    style={{ cursor: 'pointer', accentColor: '#6366f1' }}
-                    title="Select all"
-                  />
-                </th>
+                {!isCaller && (
+                  <th style={{ padding: '10px 8px', width: 36 }}>
+                    <input
+                      type="checkbox"
+                      checked={filtered.length > 0 && selectedIds.size === filtered.length}
+                      onChange={() => {
+                        if (selectedIds.size === filtered.length) selectNone()
+                        else selectAll()
+                      }}
+                      style={{ cursor: 'pointer', accentColor: '#6366f1' }}
+                      title="Select all"
+                    />
+                  </th>
+                )}
                 {['#', 'Address', 'Owner', 'Score', 'Persona', 'ARV', 'Phone', 'Source'].map((h) => (
                   <th key={h} style={{
                     padding: '10px 12px', textAlign: 'left', fontSize: 11, color: '#64748b',
@@ -716,11 +737,12 @@ export function CallList() {
                   isActive={activeLead?.lead_id === lead.lead_id}
                   isSelected={selectedIds.has(lead.lead_id)}
                   onToggleSelect={toggleSelect}
+                  hideCheckbox={isCaller}
                 />
               ))}
               {filtered.length === 0 && (
                 <tr>
-                  <td colSpan={9} style={{ padding: 32, textAlign: 'center', color: '#334155' }}>
+                  <td colSpan={isCaller ? 8 : 9} style={{ padding: 32, textAlign: 'center', color: '#334155' }}>
                     {statusFilter || sourceFilter ? 'No leads match this filter.' : 'No leads in queue. Run the pipeline to generate a call list.'}
                   </td>
                 </tr>
@@ -730,7 +752,7 @@ export function CallList() {
         </div>
       </div>
 
-      {activeLead && <DetailPanel lead={activeLead} />}
+      {activeLead && <DetailPanel lead={activeLead} isCaller={isCaller} />}
       {dialMode && <DialMode leads={filtered} onClose={() => setDialMode(false)} />}
     </div>
   )

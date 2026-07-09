@@ -743,3 +743,212 @@ export interface AgentProxyStatus {
     total_calls: number
   }
 }
+
+// ── Mega-Agent Chat ─────────────────────────────────────────────
+
+export interface Conversation {
+  id: number
+  user_id: number
+  title: string | null
+  created_at: string
+  updated_at: string
+  message_count: number
+}
+
+export interface ConversationMessage {
+  id: number
+  conversation_id: number
+  role: 'user' | 'agent' | 'system'
+  agent_type: string | null
+  content: string
+  metadata_json: string | null
+  metadata: {
+    actions_taken?: Array<{ operation: string; params?: Record<string, unknown>; result?: unknown; error?: string }>
+    confirmation?: { id: number; action: string; description: string; params: Record<string, unknown> }
+    confirmed?: boolean
+    cancelled?: boolean
+    data?: unknown
+  } | null
+  created_at: string
+}
+
+export interface ChatResponse {
+  conversation_id: number
+  agent_type: string
+  content: string
+  actions_taken?: Array<{ operation: string; params?: Record<string, unknown>; result?: unknown }>
+  confirmation?: { id: number; action: string; description: string; params: Record<string, unknown> }
+  data?: unknown
+}
+
+// ── Caller Availability Schedule ──────────────────────────────────
+
+export type AvailabilityStatus = 'available' | 'unavailable'
+
+export interface CallerAvailability {
+  id: number
+  user_id: number
+  date: string
+  status: AvailabilityStatus
+  start_time: string | null
+  end_time: string | null
+  notes: string | null
+  display_name: string
+  username: string
+  role?: string
+  created_at: string
+  updated_at: string
+}
+
+// ── Finances ──────────────────────────────────────────────────────
+
+export interface Expense {
+  id: number
+  name: string
+  category: string
+  amount: number
+  frequency: string
+  active: number
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface Revenue {
+  id: number
+  deal_address: string | null
+  assignment_fee: number
+  lead_id: string | null
+  caller_user_id: number | null
+  caller_name: string | null
+  closed_at: string
+  commission_paid: number
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface PayrollEntry {
+  id: number
+  user_id: number
+  caller_name: string
+  week_start: string
+  week_end: string
+  hours_worked: number
+  hourly_rate: number
+  base_pay: number
+  commission: number
+  total_pay: number
+  paid: number
+  paid_at: string | null
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
+// ── Activity Tracking ──────────────────────────────────────────────
+
+export interface CallerDailyLog {
+  id: number
+  user_id: number
+  caller_name: string
+  log_date: string
+  hours_claimed: number
+  dials_claimed: number
+  leads_set_claimed: number
+  notes: string | null
+  submitted_at: string
+  updated_at: string
+}
+
+export interface ActivitySession {
+  start: string
+  end: string
+  duration_min: number
+  calls: number
+}
+
+export interface ActivityGap {
+  after_session: number
+  gap_minutes: number
+  from: string
+  to: string
+}
+
+export interface HourlyBreakdown {
+  hour: number
+  label: string
+  dials: number
+  billable: boolean
+  threshold: number
+}
+
+export interface CallerActivity {
+  user_id: number
+  date: string
+  total_calls: number
+  active_minutes: number
+  billable_hours: number
+  hourly_breakdown: HourlyBreakdown[]
+  sessions: ActivitySession[]
+  buckets: Record<string, number>
+  gaps: ActivityGap[]
+  calls_per_hour: number
+  first_call: string | null
+  last_call: string | null
+  disposition_counts: Record<string, number>
+}
+
+export interface ActivityDaySummary {
+  user_id: number
+  caller_name: string
+  call_date: string
+  actual_dials: number
+  first_call: string
+  last_call: string
+  actual_leads_set: number
+  actual_span_hours: number
+  billable_hours: number
+  non_billable_hours: Array<{ hour: number; dials: number }>
+  hours_claimed: number | null
+  dials_claimed: number | null
+  leads_set_claimed: number | null
+  log_notes: string | null
+  log_submitted: boolean
+  integrity_flags: string[]
+}
+
+export interface IntegrityCallerReport {
+  user_id: number
+  caller_name: string
+  total_days_active: number
+  logs_submitted: number
+  logs_missing: number
+  flagged_days: number
+  total_actual_dials: number
+  total_claimed_dials: number
+  total_actual_hours: number
+  total_claimed_hours: number
+  hour_accuracy: number | null
+  dial_accuracy: number | null
+  trust_score: number | null
+  flag_counts: Record<string, number>
+}
+
+export interface IntegrityReport {
+  date_from: string
+  date_to: string
+  callers: IntegrityCallerReport[]
+}
+
+export interface FinanceSummary {
+  monthly_overhead: number
+  monthly_caller_cost: number
+  total_monthly_cost: number
+  total_revenue: number
+  deal_count: number
+  total_payroll: number
+  unpaid_payroll: number
+  active_callers: number
+  profit: number
+}

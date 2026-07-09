@@ -123,3 +123,25 @@ lead-vault/pipeline/queue/**
 !lead-vault/pipeline/queue/.gitkeep
 lead-vault/pipeline/done/**
 !lead-vault/pipeline/done/.gitkeep
+lead-vault/acquisition/code-violations/**
+lead-vault/acquisition/scouting/**
+lead-vault/scouting/**
+lead_engine/data/
+
+# =============================================================================
+# Hermes runtime data — databases, recordings, debug artifacts
+# =============================================================================
+hermes/data/hermes.db
+hermes/data/hermes.db-*
+hermes/data/recordings/
+hermes/data/distressed-properties.json
+hermes/data/scout-batch.json
+hermes/data/*.png
+hermes/*.db
+hermes/*.db-*
+
+# =============================================================================
+# Dashboard test / scratch artifacts
+# =============================================================================
+dashboard/test-results/
+dashboard/hue-test.txt

@@ -4,7 +4,7 @@ import { useUiStore, type AppTab } from '../store/ui-store'
 import { useAgentStore } from '../store/agent-store'
 import { useAuthStore } from '../store/auth-store'
 import { hermesClient } from '../api/hermes-client'
-import { Radio, ClipboardList, BarChart3, Bot, Bell, Menu, X, Check, XIcon, Eye, LogOut, User, Settings } from 'lucide-react'
+import { Radio, ClipboardList, BarChart3, Bot, Bell, Menu, X, Check, XIcon, Eye, LogOut, User, Settings, Calendar, DollarSign, Activity } from 'lucide-react'
 import { JarvisOverlay } from '../components/JarvisOverlay'
 import type { Proposal } from '../api/types'
 import type { Permission } from '../auth/permissions'
@@ -14,6 +14,9 @@ const allTabs: { id: AppTab; label: string; icon: React.ReactNode; requires: Per
   { id: 'underwriting', label: 'Underwriting', icon: <ClipboardList size={18} />, requires: 'view:underwriting' },
   { id: 'kpi', label: 'KPI & Follow-Up', icon: <BarChart3 size={18} />, requires: 'view:kpi' },
   { id: 'agents', label: 'Agents', icon: <Bot size={18} />, requires: 'view:agents' },
+  { id: 'schedule', label: 'Schedule', icon: <Calendar size={18} />, requires: 'view:schedule' },
+  { id: 'activity', label: 'Activity', icon: <Activity size={18} />, requires: 'view:activity' },
+  { id: 'finances', label: 'Finances', icon: <DollarSign size={18} />, requires: 'view:finances' },
   { id: 'settings', label: 'Settings', icon: <Settings size={18} />, requires: 'action:manage_users' },
 ]
 

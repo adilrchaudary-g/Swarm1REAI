@@ -1,4 +1,4 @@
-import type { Lead, PhoneRecord, PipelineStats, SourceAdapter, KpiSummary, FollowUp, MarketInfo, SocialComment, SocialCampaign, SocialBanditStats, FoiaRequest, WaterShutoffRecord, WaterShutoffStats, FsboListing, FsboMarket, FsboStats, FsboScrapeStatus, CourtRecordCounty, CourtRecordCase, CourtRecordStats, CourtRecordScrapeStatus, CountyScouting, CountyScoutingStats, ScoutPipelineStatus, DistressedProperty, CallRecording, CallRecordingStats, UnderwritingReport, EvaluationStatus, ConversionFunnel, CallMetrics, DailyActivity, SourceRoi, TrackerKpis, DialStreak, AgentDefinition, AgentRun, Proposal, AgentProxyStatus, Contract, ContractData, UserSettings } from './types'
+import type { Lead, PhoneRecord, PipelineStats, SourceAdapter, KpiSummary, FollowUp, MarketInfo, SocialComment, SocialCampaign, SocialBanditStats, FoiaRequest, WaterShutoffRecord, WaterShutoffStats, FsboListing, FsboMarket, FsboStats, FsboScrapeStatus, CourtRecordCounty, CourtRecordCase, CourtRecordStats, CourtRecordScrapeStatus, CountyScouting, CountyScoutingStats, ScoutPipelineStatus, DistressedProperty, CallRecording, CallRecordingStats, UnderwritingReport, EvaluationStatus, ConversionFunnel, CallMetrics, DailyActivity, SourceRoi, TrackerKpis, DialStreak, AgentDefinition, AgentRun, Proposal, AgentProxyStatus, Contract, ContractData, UserSettings, CallerAvailability, Expense, Revenue, PayrollEntry, FinanceSummary, CallerDailyLog, CallerActivity, ActivityDaySummary, IntegrityReport, Conversation, ConversationMessage, ChatResponse } from './types'
 
 const BASE = '/api'
 
@@ -74,6 +74,13 @@ export const hermesClient = {
     get: async (id: string) => {
       const raw = await get<any>(`/leads/${id}`)
       return normalizeLead(raw) as Lead
+    },
+    assignments: {
+      stats: () => get<Array<{ user_id: number; caller_name: string; total_assigned: number; remaining: number; contacted: number; interested: number; not_interested: number; follow_up: number; assigned_since: string | null }>>('/leads/assignments'),
+      autoAssign: (callerIds: number[], countPerCaller?: number) =>
+        post<{ status: string; assigned: Record<number, number>; total: number }>('/leads/assignments/auto', { caller_ids: callerIds, count_per_caller: countPerCaller }),
+      compare: (callerIds: number[]) =>
+        get<Record<number, any>>(`/leads/assignments/compare?caller_ids=${callerIds.join(',')}`),
     },
     updateStatus: (id: string, status: string, reason?: string) =>
       post<{ status: string; lead_id: string }>(`/leads/${id}/status`, { status, reason }),
@@ -402,7 +409,7 @@ export const hermesClient = {
       post<{ status: string; id: number }>(`/call-recordings/${id}/transcribe`),
     grade: (id: number) =>
       post<{ status: string; id: number }>(`/call-recordings/${id}/grade`),
-    audioUrl: (id: number) => `${BASE}/call-recordings/${id}/audio`,
+    audioUrl: (id: number) => `${BASE}/call-recordings/${id}/audio?token=${encodeURIComponent(localStorage.getItem('swarm_token') || '')}`,
     byLead: (leadId: string) =>
       get<CallRecording[]>(`/call-recordings/by-lead/${encodeURIComponent(leadId)}`),
     autoLink: (id: number) =>
@@ -487,5 +494,64 @@ export const hermesClient = {
       bulkDeny: (ids: number[], reason?: string) =>
         post<{ denied: number }>('/agents/proposals/bulk-deny', { ids, reason }),
     },
+  },
+
+  finances: {
+    summary: () => get<FinanceSummary>('/finances/summary'),
+    expenses: {
+      list: () => get<Expense[]>('/finances/expenses'),
+      save: (data: Partial<Expense>) => post<Expense>('/finances/expenses', data),
+      delete: (id: number) => post<{ status: string }>('/finances/expenses', { id, _delete: true }),
+    },
+    revenue: {
+      list: () => get<Revenue[]>('/finances/revenue'),
+      add: (data: Partial<Revenue>) => post<Revenue>('/finances/revenue', data),
+      delete: (id: number) => post<{ status: string }>('/finances/revenue', { id, _delete: true }),
+    },
+    payroll: {
+      list: (weekStart?: string) =>
+        get<PayrollEntry[]>(`/finances/payroll${weekStart ? `?week_start=${weekStart}` : ''}`),
+      save: (data: Partial<PayrollEntry>) => post<{ id: number; status: string }>('/finances/payroll', data),
+      markPaid: (id: number) => post<{ status: string }>('/finances/payroll', { id, _mark_paid: true }),
+    },
+  },
+
+  activity: {
+    liveStatus: () =>
+      get<Array<{ user_id: number; name: string; active: boolean; today_dials: number; last_call: string | null; inactive_minutes: number | null }>>('/activity/live-status'),
+    tracker: (userId: number, date: string) =>
+      get<CallerActivity>(`/activity/tracker?user_id=${userId}&date=${date}`),
+    summary: (dateFrom: string, dateTo: string, userId?: number) =>
+      get<ActivityDaySummary[]>(`/activity/summary?date_from=${dateFrom}&date_to=${dateTo}${userId ? `&user_id=${userId}` : ''}`),
+    integrity: (dateFrom: string, dateTo: string) =>
+      get<IntegrityReport>(`/activity/integrity?date_from=${dateFrom}&date_to=${dateTo}`),
+    dailyLogs: (dateFrom: string, dateTo: string, userId?: number) =>
+      get<CallerDailyLog[]>(`/activity/daily-logs?date_from=${dateFrom}&date_to=${dateTo}${userId ? `&user_id=${userId}` : ''}`),
+    submitLog: (data: { log_date: string; hours_claimed: number; dials_claimed: number; leads_set_claimed: number; notes?: string; user_id?: number }) =>
+      post<{ status: string }>('/activity/daily-log', data),
+  },
+
+  schedule: {
+    mine: (dateFrom: string, dateTo: string) =>
+      get<CallerAvailability[]>(`/schedule?date_from=${dateFrom}&date_to=${dateTo}`),
+    all: (dateFrom: string, dateTo: string) =>
+      get<CallerAvailability[]>(`/schedule/all?date_from=${dateFrom}&date_to=${dateTo}`),
+    save: (entries: Array<{ date: string; status: string; start_time?: string; end_time?: string }>, userId?: number) =>
+      post<{ status: string; upserted: number }>('/schedule', { entries, user_id: userId }),
+    delete: (date: string, startTime?: string, userId?: number) =>
+      post<{ status: string; deleted: number }>('/schedule/delete', { date, start_time: startTime, user_id: userId }),
+  },
+
+  chat: {
+    send: (message: string, conversationId?: number) =>
+      post<ChatResponse>('/chat', { message, conversation_id: conversationId }),
+    conversations: () =>
+      get<Conversation[]>('/chat/conversations'),
+    messages: (conversationId: number) =>
+      get<{ conversation_id: number; messages: ConversationMessage[] }>(`/chat/conversations/${conversationId}`),
+    confirm: (confirmationId: number) =>
+      post<{ status: string; conversation_id: number; result?: unknown }>(`/chat/confirm/${confirmationId}`, {}),
+    cancel: (confirmationId: number) =>
+      post<{ status: string; conversation_id: number }>(`/chat/cancel/${confirmationId}`, {}),
   },
 }
