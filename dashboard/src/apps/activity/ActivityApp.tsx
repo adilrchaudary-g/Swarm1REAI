@@ -35,11 +35,11 @@ export function ActivityApp() {
   const queryClient = useQueryClient()
   const { user } = useAuthStore()
   const isAdmin = user?.role === 'admin'
-  const [section, setSection] = useState<Section>('tracker')
+  const [section, setSection] = useState<Section>(isAdmin ? 'tracker' : 'daily-log')
   const [refreshing, setRefreshing] = useState(false)
 
   const tabs: { id: Section; label: string; icon: React.ReactNode; adminOnly?: boolean }[] = [
-    { id: 'tracker', label: 'Activity Tracker', icon: <Activity size={15} /> },
+    { id: 'tracker', label: 'Activity Tracker', icon: <Activity size={15} />, adminOnly: true },
     { id: 'daily-log', label: 'Daily Log', icon: <FileText size={15} /> },
     { id: 'integrity', label: 'Integrity Check', icon: <Shield size={15} />, adminOnly: true },
   ]
@@ -56,6 +56,48 @@ export function ActivityApp() {
     Promise.all(
       keys[section].map(k => queryClient.invalidateQueries({ queryKey: [k] }))
     ).finally(() => setTimeout(() => setRefreshing(false), 400))
+  }
+
+  if (!isAdmin) {
+    return (
+      <div>
+        <div style={{ marginBottom: 20, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+          <div>
+            <h2 style={{ fontSize: 16, fontWeight: 700, color: '#e2e8f0', margin: 0 }}>Daily Log</h2>
+            <p style={{ fontSize: 12, color: '#64748b', margin: '4px 0 0' }}>
+              Log your dials and hours each day
+            </p>
+          </div>
+          <button
+            onClick={() => {
+              setRefreshing(true)
+              queryClient.invalidateQueries({ queryKey: ['daily-logs'] })
+                .finally(() => setTimeout(() => setRefreshing(false), 400))
+            }}
+            disabled={refreshing}
+            style={{
+              padding: '7px 14px', borderRadius: 8,
+              background: 'rgba(255,255,255,0.04)',
+              border: '1px solid rgba(255,255,255,0.08)',
+              color: '#94a3b8', fontSize: 12, fontWeight: 600,
+              cursor: refreshing ? 'default' : 'pointer',
+              display: 'flex', alignItems: 'center', gap: 6,
+              opacity: refreshing ? 0.6 : 1,
+              transition: 'all 0.15s',
+            }}
+          >
+            <RefreshCw size={14} style={{
+              animation: refreshing ? 'spin 0.6s linear infinite' : 'none',
+            }} />
+            Refresh
+          </button>
+        </div>
+        <DailyLogSection isAdmin={false} userId={user?.id ?? 0} />
+        <style>{`
+          @keyframes spin { from { transform: rotate(0deg) } to { transform: rotate(360deg) } }
+        `}</style>
+      </div>
+    )
   }
 
   return (

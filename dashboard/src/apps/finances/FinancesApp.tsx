@@ -150,7 +150,7 @@ function OverviewSection() {
         <h3 style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0', marginBottom: 14 }}>Monthly Cost Breakdown</h3>
         <CostBar label="PropStream" amount={200} total={summary.total_monthly_cost} color="#f97316" />
         <CostBar label="Twilio Autodialer" amount={30} total={summary.total_monthly_cost} color="#f97316" />
-        <CostBar label={`Callers (${summary.active_callers}x ~$200/mo)`} amount={summary.monthly_caller_cost} total={summary.total_monthly_cost} color="#eab308" />
+        <CostBar label={`Callers (3x ~$200/mo)`} amount={summary.monthly_caller_cost} total={summary.total_monthly_cost} color="#eab308" />
       </div>
     </div>
   )

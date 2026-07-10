@@ -11,6 +11,7 @@ export type Permission =
   | 'view:sources'
   | 'view:markets'
   | 'view:underwriting'
+  | 'view:dispo'
   | 'view:kpi'
   | 'view:agents'
   | 'action:log_call'

@@ -12,6 +12,7 @@ import { ScheduleApp } from './apps/schedule/ScheduleApp'
 import { FinancesApp } from './apps/finances/FinancesApp'
 import { ActivityApp } from './apps/activity/ActivityApp'
 import { UserManagement } from './apps/settings/UserManagement'
+import { DispoApp } from './apps/dispo/DispoApp'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -30,6 +31,8 @@ function AppRouter() {
       return <LeadGenApp />
     case 'underwriting':
       return <UnderwritingApp />
+    case 'dispo':
+      return <DispoApp />
     case 'kpi':
       return <KpiApp />
     case 'agents':
