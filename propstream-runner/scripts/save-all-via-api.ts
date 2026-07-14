@@ -4,7 +4,7 @@ import os from "os";
 import fs from "fs";
 
 const PROFILE_DIR = path.join(os.homedir(), ".propstream-runner", "chrome-profile");
-const USERNAME = "erdemkaradayi27@gmail.com";
+const USERNAME = "adilrchaudary@gmail.com";
 const PASSWORD = "ArC_2007";
 const OUTPUT_DIR = path.join(os.homedir(), "Desktop", "wholesaling-swarm", "lead-vault", "distressed-harvest-output", "api-save");
 

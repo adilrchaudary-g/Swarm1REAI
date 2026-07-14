@@ -139,6 +139,15 @@ def load_counties() -> list[CountyRecord]:
             population=r.get("population", 0),
             median_home_value=r.get("median_home_value", 0),
             search_term=r.get("search_term", f"{r['county']} {r['state']}"),
+            scouted_at=r.get("scouted_at"),
+            pre_foreclosure_count=r.get("pre_foreclosure_count"),
+            tax_delinquent_count=r.get("tax_delinquent_count"),
+            probate_count=r.get("probate_count"),
+            vacant_sfr_count=r.get("vacant_sfr_count"),
+            total_distressed=r.get("total_distressed"),
+            last_harvested_at=r.get("last_harvested_at"),
+            harvest_count=r.get("harvest_count", 0),
+            leads_generated=r.get("leads_generated", 0),
         )
         for r in raw
     ]

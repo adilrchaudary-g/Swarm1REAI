@@ -88,6 +88,13 @@ type AcquisitionResult = {
   errors: ResultPayload["errors"];
 };
 
+// PropStream's location search indexes Louisiana parishes (and Alaska boroughs)
+// under "County" — "Terrebonne Parish LA" resolves to nothing while
+// "Terrebonne County, LA" works.
+function normalizeGeoTerm(term: string): string {
+  return term.replace(/\s+(Parish|Borough|Census Area)\b/i, " County");
+}
+
 export class PropStreamClient {
   private lastSuccessfulStep = "startup";
   private _lastExportCsv: string | null = null;
@@ -679,7 +686,7 @@ export class PropStreamClient {
     const page = options?.skipOpenSearch ? await this.browser.getPage() : await this.openSearch();
     this.logStep("search:start", { zip: payload.zip, filters: Object.keys(payload.filters || {}) });
     await this.dismissBlockingOverlays(page).catch(() => undefined);
-    await this.setInputValue(page, SELECTORS.searchZipInputs, payload.zip);
+    await this.setInputValue(page, SELECTORS.searchZipInputs, normalizeGeoTerm(payload.zip));
     this.logStep("search:zip-entered", { zip: payload.zip });
     await this.applyFilters(page, payload.filters || {});
     this.logStep("search:filters-applied");
@@ -798,43 +805,91 @@ export class PropStreamClient {
   async scoutCounty(
     searchTerm: string,
     signals: string[] = ["pre_foreclosure", "tax_delinquent", "probate"],
-  ): Promise<Array<{ signal: string; count: number }>> {
+  ): Promise<Array<{ signal: string; count: number; stale?: boolean; retried?: boolean }>> {
     await this.ensureReady();
-    const results: Array<{ signal: string; count: number }> = [];
+    const results: Array<{ signal: string; count: number; stale?: boolean; retried?: boolean }> = [];
+    let prevCount: number | null = null;
 
     for (const signal of signals) {
-      const page = await this.openSearch();
-      await this.dismissBlockingOverlays(page).catch(() => undefined);
-      await this.setInputValue(page, SELECTORS.searchZipInputs, searchTerm);
-      this.logStep("scout:search-term-entered", { searchTerm, signal });
-
-      await this.applyFilters(page, { vacant: true, sfr_detached: true, [signal]: true });
-      this.logStep("scout:filters-applied", { signal });
-
-      const clicked =
-        (await this.clickBySelectors(page, SELECTORS.applyButtons)) ||
-        (await this.clickByText(page, /^search$/i)) ||
-        (await this.clickByText(page, /search|apply|update/i));
-      if (!clicked) {
-        this.logStep("scout:search-button-not-found", { signal });
-        results.push({ signal, count: 0 });
-        continue;
+      let result = await this.scoutSingleSignal(searchTerm, signal);
+      // Two different distress signals returning the exact same count is the
+      // signature of filter-state leakage or a stale count read — re-run once
+      // in a fresh page before trusting it.
+      if (prevCount !== null && result.count === prevCount) {
+        this.logStep("scout:identical-count-retry", { signal, count: result.count });
+        result = await this.scoutSingleSignal(searchTerm, signal);
+        result.retried = true;
       }
-
-      this.logStep("scout:submitted", { signal });
-      await page.waitForTimeout(3_000);
-      await this.dismissBlockingOverlays(page).catch(() => undefined);
-
-      const state = await this.browser.snapshot();
-      const countText = state.result_count_text || "";
-      const match = countText.match(/(\d[\d,]*)/);
-      const count = match ? Number(match[1].replace(/,/g, "")) : 0;
-      this.logStep("scout:result-count", { signal, count, raw: countText });
-      results.push({ signal, count });
+      prevCount = result.count;
+      results.push(result);
     }
 
     this.logStep("scout:complete", { searchTerm, results });
     return results;
+  }
+
+  private async scoutSingleSignal(
+    searchTerm: string,
+    signal: string,
+  ): Promise<{ signal: string; count: number; stale?: boolean; retried?: boolean }> {
+    // Hard-reload /search so no filter toggles leak in from a previous scout.
+    await this.browser.gotoSearchPage();
+    const page = await this.browser.getPage();
+    await page.waitForTimeout(2_000);
+    await this.dismissBlockingOverlays(page).catch(() => undefined);
+
+    const preState = await this.browser.snapshot().catch(() => null);
+    const preCountText = preState?.result_count_text || "";
+
+    await this.setInputValue(page, SELECTORS.searchZipInputs, normalizeGeoTerm(searchTerm));
+    this.logStep("scout:search-term-entered", { searchTerm, signal });
+
+    await this.applyFilters(page, { vacant: true, sfr_detached: true, [signal]: true });
+    this.logStep("scout:filters-applied", { signal });
+
+    const clicked =
+      (await this.clickBySelectors(page, SELECTORS.applyButtons)) ||
+      (await this.clickByText(page, /^search$/i)) ||
+      (await this.clickByText(page, /search|apply|update/i));
+    if (!clicked) {
+      this.logStep("scout:search-button-not-found", { signal });
+      return { signal, count: 0, stale: true };
+    }
+    this.logStep("scout:submitted", { signal });
+
+    const { countText, stale } = await this.waitForCountRefresh(page, preCountText);
+    const match = countText.match(/(\d[\d,]*)/);
+    const count = match ? Number(match[1].replace(/,/g, "")) : 0;
+    this.logStep("scout:result-count", { signal, count, raw: countText, stale });
+    return stale ? { signal, count, stale } : { signal, count };
+  }
+
+  // Poll the results counter until it has visibly refreshed (differs from its
+  // pre-submit value) and then stabilized across two consecutive reads. A fixed
+  // sleep is not enough: slow searches used to get their previous search's
+  // count read out from under them.
+  private async waitForCountRefresh(
+    page: Page,
+    preCountText: string,
+    timeoutMs = 30_000,
+  ): Promise<{ countText: string; stale: boolean }> {
+    const startedAt = Date.now();
+    let lastText = "";
+    let changed = false;
+    while (Date.now() - startedAt < timeoutMs) {
+      await page.waitForTimeout(1_000);
+      await this.dismissBlockingOverlays(page).catch(() => undefined);
+      const state = await this.browser.snapshot().catch(() => null);
+      const text = state?.result_count_text || "";
+      if (text && text !== preCountText) {
+        if (changed && text === lastText) {
+          return { countText: text, stale: false };
+        }
+        changed = true;
+      }
+      lastText = text;
+    }
+    return { countText: lastText, stale: !changed };
   }
 
   private async applyFilters(page: Page, filters: Record<string, unknown>) {

@@ -4,7 +4,7 @@
 # Run this after PropStream finishes processing skip trace orders (4-12 hours).
 cd "$(dirname "$0")/.."
 
-export PROPSTREAM_USERNAME="erdemkaradayi27@gmail.com"
+export PROPSTREAM_USERNAME="adilrchaudary@gmail.com"
 export PROPSTREAM_PASSWORD="ArC_2007"
 
 RUNTIME_PROFILE="$(pwd)/.runtime/profile"

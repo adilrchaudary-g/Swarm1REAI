@@ -6334,6 +6334,10 @@ Sincerely,
                 fips = str(r.get("fips") or "").zfill(5)
                 if not fips:
                     continue
+                # Failed or suspect scouts must never land as real zeros — they
+                # get re-scouted instead (see propstream-runner bulk-scout).
+                if r.get("error") or not r.get("scouted_at") or r.get("suspect"):
+                    continue
                 signal_map = {}
                 for s in r.get("signals", []):
                     signal_map[s["signal"]] = s["count"]

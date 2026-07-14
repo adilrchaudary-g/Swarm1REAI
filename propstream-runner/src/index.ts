@@ -344,9 +344,7 @@ async function main() {
       throw new Error("Batch file is empty");
     }
 
-    const interactiveConfig = { ...config, headless: false };
-    const runner = await PropStreamRunner.create(interactiveConfig);
-    await runner.waitForManualSearchReady();
+    const runner = await PropStreamRunner.create(config);
 
     const date = new Date().toISOString().slice(0, 10);
     const defaultOutDir = path.join(config.harvestArchiveRoot, "..", "scouting", date);
@@ -356,42 +354,77 @@ async function main() {
     const outDir = path.dirname(outPath);
     fs.mkdirSync(outDir, { recursive: true });
 
-    const allResults: Array<{
+    type ScoutEntry = {
       fips: string;
       search_term: string;
-      signals: Array<{ signal: string; count: number }>;
+      population?: number;
+      signals: Array<{ signal: string; count: number; stale?: boolean; retried?: boolean }>;
       total_distressed: number;
-      scouted_at: string;
-    }> = [];
+      scouted_at: string | null;
+      error?: string;
+      suspect?: boolean;
+    };
 
-    console.log(`\n=== BULK SCOUT: ${batchData.length} counties ===\n`);
-    for (const [idx, entry] of batchData.entries()) {
-      console.log(`[${idx + 1}/${batchData.length}] Scouting ${entry.search_term}...`);
+    // Resume: entries already in the output file with a successful scout are skipped.
+    const allResults: ScoutEntry[] = fs.existsSync(outPath)
+      ? (JSON.parse(fs.readFileSync(outPath, "utf8")) as ScoutEntry[])
+      : [];
+    const done = new Set(allResults.filter((r) => r.scouted_at && !r.error).map((r) => r.fips));
+    const pending = batchData.filter((e) => !done.has(e.fips));
+    const persist = () => fs.writeFileSync(outPath, JSON.stringify(allResults, null, 2));
+
+    console.log(`\n=== BULK SCOUT: ${batchData.length} counties (${done.size} already done, ${pending.length} to scout) ===\n`);
+    let consecutiveFailures = 0;
+    for (const [idx, entry] of pending.entries()) {
+      console.log(`[${idx + 1}/${pending.length}] Scouting ${entry.search_term}...`);
+      const population = (entry as { population?: number }).population;
       try {
         const results = await runner.scoutCounty(entry.search_term);
         const total = results.reduce((sum, r) => sum + r.count, 0);
+        // Plausibility: no single distress signal should approach the county's
+        // total housing stock (~40% of population). Flag, don't discard.
+        const suspect =
+          results.some((r) => r.stale) ||
+          (typeof population === "number" &&
+            population > 0 &&
+            results.some((r) => r.count > population * 0.4));
         allResults.push({
           fips: entry.fips,
           search_term: entry.search_term,
+          population,
           signals: results,
           total_distressed: total,
           scouted_at: new Date().toISOString(),
+          ...(suspect ? { suspect: true } : {}),
         });
-        console.log(`  → ${total.toLocaleString()} distressed properties`);
+        consecutiveFailures = 0;
+        console.log(`  → ${total.toLocaleString()} distressed properties${suspect ? " [SUSPECT]" : ""}`);
       } catch (error) {
-        console.error(`  FAILED: ${error instanceof Error ? error.message : String(error)}`);
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`  FAILED: ${message}`);
+        // Failures carry no scouted_at so they are retried on resume and never
+        // ingested as real zeros.
         allResults.push({
           fips: entry.fips,
           search_term: entry.search_term,
+          population,
           signals: [],
           total_distressed: 0,
-          scouted_at: new Date().toISOString(),
+          scouted_at: null,
+          error: message,
         });
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= 5) {
+          persist();
+          console.error(`\nABORT: ${consecutiveFailures} consecutive failures — session is likely dead. Re-run to resume.`);
+          break;
+        }
       }
+      persist();
     }
 
-    fs.writeFileSync(outPath, JSON.stringify(allResults, null, 2));
-    console.log(`\nScouting complete. ${allResults.length} counties scouted.`);
+    const succeeded = allResults.filter((r) => r.scouted_at && !r.error).length;
+    console.log(`\nScouting complete. ${succeeded}/${batchData.length} counties scouted successfully.`);
     console.log(`Results written to: ${outPath}`);
 
     const ranked = [...allResults].sort((a, b) => b.total_distressed - a.total_distressed);

@@ -3,7 +3,7 @@ import path from "path";
 import os from "os";
 
 const PROFILE_DIR = path.join(os.homedir(), ".propstream-runner", "chrome-profile");
-const USERNAME = "erdemkaradayi27@gmail.com";
+const USERNAME = "adilrchaudary@gmail.com";
 const PASSWORD = "ArC_2007";
 
 (async () => {

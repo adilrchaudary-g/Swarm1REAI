@@ -2,7 +2,7 @@
 set -e
 cd "$(dirname "$0")/.."
 
-export PROPSTREAM_USERNAME="erdemkaradayi27@gmail.com"
+export PROPSTREAM_USERNAME="adilrchaudary@gmail.com"
 export PROPSTREAM_PASSWORD="ArC_2007"
 
 # Same counties, NO vacant filter — captures all distressed regardless of occupancy

@@ -4,7 +4,7 @@ import os from "os";
 import fs from "fs";
 
 const RUNTIME_PROFILE = path.join(process.cwd(), ".runtime", "profile");
-const USERNAME = "erdemkaradayi27@gmail.com";
+const USERNAME = "adilrchaudary@gmail.com";
 const PASSWORD = "ArC_2007";
 const ACQUISITION_ROOT = path.join(os.homedir(), "Desktop", "wholesaling-swarm", "lead-vault", "acquisition", "propstream");
 
