@@ -390,7 +390,7 @@ export const hermesClient = {
   },
 
   callRecordings: {
-    list: (params?: { search?: string; score?: string; motivation?: string; date_from?: string; date_to?: string; limit?: number; offset?: number }) => {
+    list: (params?: { search?: string; score?: string; motivation?: string; date_from?: string; date_to?: string; caller?: number | string; limit?: number; offset?: number }) => {
       const qs = new URLSearchParams()
       if (params) {
         for (const [k, v] of Object.entries(params)) {
@@ -571,10 +571,11 @@ export const hermesClient = {
   },
 
   dialer: {
-    start: (queue: Array<{ lead_id: string; phone: string; name?: string }>) =>
-      post<DialerSessionState>('/dialer/session/start', { queue }),
+    start: (queue: Array<{ lead_id: string; phone: string; name?: string }>, lines = 5) =>
+      post<DialerSessionState>('/dialer/session/start', { queue, lines }),
     pause: () => post<DialerSessionState>('/dialer/session/pause', {}),
     resume: () => post<DialerSessionState>('/dialer/session/resume', {}),
+    setLines: (lines: number) => post<DialerSessionState>('/dialer/session/lines', { lines }),
     stop: () => post<DialerSessionState>('/dialer/session/stop', {}),
     state: () => get<DialerSessionState>('/dialer/session/state'),
     disposition: (leadId: string, disposition: string, note?: string) =>
@@ -638,6 +639,9 @@ export interface DialerSessionState {
   conference?: string
   lines?: number
   dialing_lines?: number
+  inflight?: Array<{ lead_id: string; name?: string | null; phone?: string | null }>
+  up_next?: Array<{ lead_id: string; name?: string | null; phone?: string | null }>
+  remaining?: number
   current?: { lead_id: string; name?: string | null; phone?: string } | null
   cursor?: number
   total?: number

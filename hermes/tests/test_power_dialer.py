@@ -470,6 +470,34 @@ class MetricsTests(PowerDialerTestBase):
         self.assertEqual(m["dispositions"], {})
 
 
+# ── Activity Tracker logging (call_attempts) ────────────────────────
+class ActivityLoggingTests(PowerDialerTestBase):
+    def _attempts(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            return conn.execute("SELECT * FROM call_attempts ORDER BY id").fetchall()
+        finally:
+            conn.close()
+
+    def test_dial_logs_call_attempt_for_activity_tracker(self):
+        _, _, phone_id = self.seed_lead()
+        pd, _ = self.make_dialer([])
+        number = self.phone_row(phone_id)
+        pd._log_attempt("7", "L1", number, "no_answer")
+        rows = self._attempts()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["lead_id"], "L1")
+        self.assertEqual(rows[0]["caller_id"], 7, "caller_id must be the agent's user id (int)")
+        self.assertEqual(rows[0]["disposition"], "no_answer")
+        self.assertIsNotNone(rows[0]["called_at"])
+
+    def test_outcome_disposition_mapping(self):
+        self.assertEqual(pde._ATTEMPT_DISPOSITION["machine"], "voicemail")
+        self.assertEqual(pde._ATTEMPT_DISPOSITION["failed"], "bad_number")
+        self.assertEqual(pde._ATTEMPT_DISPOSITION["no_answer"], "no_answer")
+
+
 # ── Recording context lookup (call recording ingest) ────────────────
 class RecordingContextTests(PowerDialerTestBase):
     def test_recording_context_resolves_lead_from_call_sid(self):

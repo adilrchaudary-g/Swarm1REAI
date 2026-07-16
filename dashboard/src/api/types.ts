@@ -490,6 +490,8 @@ export interface CallRecording {
   next_action_due: string | null
   notes: string | null
   lead_id: string | null
+  caller_id: number | null
+  caller_name: string | null
   created_at: string
   updated_at: string
 }

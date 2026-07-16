@@ -290,6 +290,7 @@ function TrackerSection({ isAdmin, userId }: { isAdmin: boolean; userId: number 
     queryKey: ['activity-tracker', targetId, date],
     queryFn: () => hermesClient.activity.tracker(targetId, date),
     enabled: targetId > 0,
+    refetchInterval: 30_000,   // live-track dials/hours as the caller dials
   })
 
   const shiftDate = (days: number) => {

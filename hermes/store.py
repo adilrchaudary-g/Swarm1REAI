@@ -2033,6 +2033,7 @@ class HermesStore:
         self._migrate_activity_tracking(conn)
         self._migrate_lead_assignments(conn)
         self._migrate_conversations(conn)
+        self._migrate_recording_caller(conn)
 
     def _migrate_finances(self, conn: sqlite3.Connection) -> None:
         existing = {row[0] for row in conn.execute(
@@ -2134,6 +2135,18 @@ class HermesStore:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(call_attempts)").fetchall()}
         if "phone_number" not in cols:
             conn.execute("ALTER TABLE call_attempts ADD COLUMN phone_number TEXT")
+
+    def _migrate_recording_caller(self, conn: sqlite3.Connection) -> None:
+        """Attribute each recording to the caller who made the call, so recordings
+        can be filtered by agent (mine vs a setter's) instead of all looking like
+        the account owner's. Also backfills lead_id, which the code has always used
+        but was never in the CREATE TABLE (present on the live DB out-of-band; missing
+        on fresh DBs)."""
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(call_recordings)").fetchall()}
+        if "lead_id" not in cols:
+            conn.execute("ALTER TABLE call_recordings ADD COLUMN lead_id TEXT")
+        if "caller_id" not in cols:
+            conn.execute("ALTER TABLE call_recordings ADD COLUMN caller_id INTEGER")
 
     def _migrate_contracts(self, conn: sqlite3.Connection) -> None:
         existing = {row[0] for row in conn.execute(
@@ -6582,12 +6595,16 @@ Sincerely,
         motivation: str | None = None,
         date_from: str | None = None,
         date_to: str | None = None,
+        caller_id: int | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
         with self._connect() as conn:
             clauses: list[str] = []
             params: list[Any] = []
+            if caller_id is not None:
+                clauses.append("caller_id = ?")
+                params.append(caller_id)
             if search:
                 clauses.append(
                     "(seller_name LIKE ? OR property_address LIKE ? OR transcript LIKE ?)"
@@ -6610,9 +6627,11 @@ Sincerely,
                 params.append(date_to)
             where = " AND ".join(clauses) if clauses else "1=1"
             rows = conn.execute(
-                f"""SELECT * FROM call_recordings
+                f"""SELECT cr.*, u.display_name AS caller_name
+                    FROM call_recordings cr
+                    LEFT JOIN users u ON u.id = cr.caller_id
                     WHERE {where}
-                    ORDER BY created_at DESC
+                    ORDER BY cr.created_at DESC
                     LIMIT ? OFFSET ?""",
                 (*params, limit, offset),
             ).fetchall()
@@ -6632,8 +6651,9 @@ Sincerely,
                 """INSERT INTO call_recordings
                    (seller_name, property_address, call_date, file_path, file_name,
                     file_type, transcript, my_performance_json, seller_motivation_json,
-                    call_score, next_action, next_action_due, notes, lead_id, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    call_score, next_action, next_action_due, notes, lead_id, caller_id,
+                    created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     data.get("seller_name", ""),
                     data.get("property_address"),
@@ -6649,6 +6669,7 @@ Sincerely,
                     data.get("next_action_due"),
                     data.get("notes"),
                     data.get("lead_id"),
+                    data.get("caller_id"),
                     now,
                     now,
                 ),

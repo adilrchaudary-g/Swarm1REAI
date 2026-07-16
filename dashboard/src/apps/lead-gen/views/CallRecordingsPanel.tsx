@@ -436,13 +436,25 @@ function ListView({ onSelect, onUpload, onSessionUpload }: { onSelect: (id: numb
   const [search, setSearch] = useState('')
   const [scoreFilter, setScoreFilter] = useState('')
   const [motivationFilter, setMotivationFilter] = useState('')
+  const [callerFilter, setCallerFilter] = useState<number | 'all'>('all')
+
+  // Callers to build the "Mine / Braden / All" toggle.
+  const { data: callers = [] } = useQuery<Array<{ id: number; display_name: string; role: string }>>({
+    queryKey: ['recording-callers'],
+    queryFn: async () => {
+      const res = await fetch('/api/users', { headers: { Authorization: `Bearer ${localStorage.getItem('swarm_token') || ''}` } })
+      if (!res.ok) return []
+      return res.json()
+    },
+  })
 
   const { data: recordings, isLoading } = useQuery({
-    queryKey: ['call-recordings', search, scoreFilter, motivationFilter],
+    queryKey: ['call-recordings', search, scoreFilter, motivationFilter, callerFilter],
     queryFn: () => hermesClient.callRecordings.list({
       search: search || undefined,
       score: scoreFilter || undefined,
       motivation: motivationFilter || undefined,
+      caller: callerFilter === 'all' ? undefined : callerFilter,
       limit: 200,
     }),
     refetchInterval: 10_000,
@@ -514,6 +526,25 @@ function ListView({ onSelect, onUpload, onSessionUpload }: { onSelect: (id: numb
           </button>
         </div>
       </div>
+
+      {/* Caller filter — whose recordings to show */}
+      {callers.length > 0 && (
+        <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+          <span style={{ fontSize: 11, color: '#475569', marginRight: 2 }}>Caller:</span>
+          {[{ id: 'all' as const, display_name: 'All' }, ...callers].map((c) => {
+            const active = callerFilter === c.id
+            return (
+              <button key={String(c.id)} onClick={() => setCallerFilter(c.id as number | 'all')}
+                style={{ padding: '5px 12px', borderRadius: 14, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                         background: active ? 'rgba(99,102,241,0.14)' : 'transparent',
+                         border: `1px solid ${active ? 'rgba(99,102,241,0.4)' : '#1e1e2e'}`,
+                         color: active ? '#a5b4fc' : '#64748b' }}>
+                {c.display_name}
+              </button>
+            )
+          })}
+        </div>
+      )}
 
       <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
         <input

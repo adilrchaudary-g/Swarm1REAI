@@ -47,6 +47,17 @@ _FEE_AMD_PER_CALL = 0.0075
 _HUMAN = "human"
 _NONHUMAN_TERMINALS = {"machine", "ivr", "no_answer", "busy", "failed"}
 
+# Map a dial's terminal outcome → a call_attempts disposition, so power-dialer
+# dials show up in the Activity Tracker (which reads call_attempts) with the same
+# vocabulary as the manual dialer. Human dials log the agent's disposition code.
+_ATTEMPT_DISPOSITION = {
+    "no_answer": "no_answer",
+    "busy": "no_answer",
+    "machine": "voicemail",
+    "ivr": "voicemail",
+    "failed": "bad_number",
+}
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -361,8 +372,13 @@ class PowerDialer:
                     self._set_lead_status(lead_id, "connected")
                     dispo = self._await_disposition(agent_id, lead_id)
                     self._apply_disposition(lead_id, number, conv_id, dispo)
+                    # Activity Tracker: log the dial with the agent's disposition.
+                    self._log_attempt(agent_id, lead_id, number, dispo.get("code") or "contact_made")
                     connected = True
                     break                                    # stop dialing this owner (§9)
+                # Activity Tracker: log every non-human dial too.
+                self._log_attempt(agent_id, lead_id, number,
+                                  _ATTEMPT_DISPOSITION.get(outcome, outcome))
             if not connected:
                 self._exhaust_lead(lead_id)
 
@@ -415,6 +431,31 @@ class PowerDialer:
             return out
         finally:
             conn.close()
+
+    def _log_attempt(self, agent_id: str, lead_id: str, number: sqlite3.Row, disposition: str) -> None:
+        """Mirror one dial into `call_attempts` so the Activity Tracker live-tracks the
+        caller's dials + inferred hours (get_caller_activity reads call_attempts, NOT
+        pd_call_legs). One row per dial; caller_id = the agent's user id."""
+        try:
+            caller_id = int(agent_id)
+        except (TypeError, ValueError):
+            caller_id = None
+        try:
+            phone = number["phone_digits"] or re.sub(r"\D", "", number["phone_value"] or "")
+        except Exception:
+            phone = None
+        with self._db_lock:
+            conn = self._conn()
+            try:
+                conn.execute(
+                    "INSERT INTO call_attempts (lead_id, disposition, notes, called_at, "
+                    "phone_number, caller_id) VALUES (?,?,?,?,?,?)",
+                    (lead_id, disposition, "power dialer", _iso(_now()), phone, caller_id))
+                conn.commit()
+            except Exception as exc:
+                print(f"[pd] log_attempt failed for {lead_id}: {exc}", flush=True)
+            finally:
+                conn.close()
 
     # ── cadence (§10) ────────────────────────────────────────────
     def _record_terminal_cadence(self, number: sqlite3.Row, outcome: str) -> None:
@@ -664,7 +705,7 @@ class PowerDialer:
         conn = self._conn()
         try:
             row = conn.execute(
-                """SELECT cl.lead_id, o.owner_name, p.address_full
+                """SELECT cl.lead_id, cl.agent_id, o.owner_name, p.address_full
                    FROM pd_call_legs cl
                    JOIN leads l ON l.lead_id = cl.lead_id
                    LEFT JOIN owners o ON o.owner_id = l.owner_id
@@ -674,8 +715,13 @@ class PowerDialer:
                 (call_sid,)).fetchone()
             if not row:
                 return None
+            try:
+                agent_id = int(row["agent_id"])
+            except (TypeError, ValueError):
+                agent_id = None
             return {
                 "lead_id": row["lead_id"],
+                "agent_id": agent_id,
                 "seller_name": row["owner_name"] or "Unknown",
                 "property_address": row["address_full"],
             }

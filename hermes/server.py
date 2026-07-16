@@ -1643,12 +1643,18 @@ class HermesRuntime:
 
                 # ── Call Recordings (GET) ────────────────────────
                 if path == "/api/call-recordings":
+                    caller_raw = self._query_first(query, "caller")
+                    try:
+                        caller_id = int(caller_raw) if caller_raw not in (None, "", "all") else None
+                    except (ValueError, TypeError):
+                        caller_id = None
                     data = runtime.store.list_call_recordings(
                         search=self._query_first(query, "search"),
                         score=self._query_first(query, "score"),
                         motivation=self._query_first(query, "motivation"),
                         date_from=self._query_first(query, "date_from"),
                         date_to=self._query_first(query, "date_to"),
+                        caller_id=caller_id,
                         limit=int(self._query_first(query, "limit", "100")),
                         offset=int(self._query_first(query, "offset", "0")),
                     )
@@ -2014,6 +2020,31 @@ class HermesRuntime:
                         ).start()
                     return
 
+                # Multi-line dialer: completed call recording (called BY Twilio, no auth).
+                # The lead is known at dial time and carried on the query string.
+                if path == "/twilio/recording":
+                    q = parse_qs(urlparse(self.path).query)
+                    length = int(self.headers.get("Content-Length") or "0")
+                    raw = self.rfile.read(length) if length else b""
+                    form = parse_qs(raw.decode("utf-8", "replace"))
+                    lead_id = (q.get("lead") or [""])[0]
+                    try:
+                        rec_caller = int((q.get("caller") or [""])[0])
+                    except (ValueError, TypeError):
+                        rec_caller = None
+                    rec_url = (form.get("RecordingUrl") or [""])[0]
+                    rec_sid = (form.get("RecordingSid") or [""])[0]
+                    call_sid = (form.get("CallSid") or [""])[0]
+                    self._send_json(HTTPStatus.OK, {"status": "ok"})
+                    if rec_url and rec_sid:
+                        threading.Thread(
+                            target=_pd_ingest_recording,
+                            args=(runtime, "", call_sid, rec_sid, rec_url),
+                            kwargs={"lead_id": lead_id, "caller_id": rec_caller},
+                            daemon=True,
+                        ).start()
+                    return
+
                 # Auto-dialer: terminal call status (no-answer/busy/failed/completed).
                 if path == "/twilio/call-status":
                     q = parse_qs(urlparse(self.path).query)
@@ -2135,6 +2166,16 @@ class HermesRuntime:
 
                 if path == "/api/dialer/session/resume":
                     st = _dialer.resume(user["id"], runtime.store)
+                    self._send_json(HTTPStatus.OK, st or {"status": "idle"})
+                    return
+
+                if path == "/api/dialer/session/lines":
+                    body = self._read_json()
+                    try:
+                        n = int(body.get("lines") or 5)
+                    except (ValueError, TypeError):
+                        n = 5
+                    st = _dialer.set_lines(user["id"], n, runtime.store)
                     self._send_json(HTTPStatus.OK, st or {"status": "idle"})
                     return
 
@@ -4940,11 +4981,39 @@ def _twilio_download(url: str, dest_path: str) -> bool:
         return False
 
 
+def _lead_recording_meta(runtime: "HermesRuntime", lead_id: str) -> dict | None:
+    """Resolve a lead_id → {lead_id, seller_name, property_address} for recording
+    ingest. Used by the multi-line dialer, which knows the lead at dial time."""
+    if not lead_id:
+        return None
+    try:
+        with runtime.store._connect() as conn:
+            row = conn.execute(
+                """SELECT l.lead_id, o.owner_name, p.address_full
+                   FROM leads l
+                   LEFT JOIN owners o ON o.owner_id = l.owner_id
+                   LEFT JOIN properties p ON p.property_id = l.property_id
+                   WHERE l.lead_id = ?""", (lead_id,)).fetchone()
+    except Exception:
+        return None
+    if not row:
+        return {"lead_id": lead_id, "seller_name": "Unknown", "property_address": None}
+    return {
+        "lead_id": row["lead_id"],
+        "seller_name": row["owner_name"] or "Unknown",
+        "property_address": row["address_full"],
+    }
+
+
 def _pd_ingest_recording(runtime: "HermesRuntime", leg_ref: str, call_sid: str,
-                         recording_sid: str, recording_url: str) -> None:
-    """Ingest a completed PowerDialer call recording: download the audio locally,
-    DELETE the Twilio-side copy, register it in the recordings store linked to its
-    lead, then transcribe immediately (grading is deferred to end-of-day)."""
+                         recording_sid: str, recording_url: str,
+                         lead_id: str | None = None,
+                         caller_id: int | None = None) -> None:
+    """Ingest a completed call recording (from either dialer): download the audio
+    locally, DELETE the Twilio-side copy, register it in the recordings store linked
+    to its lead, then transcribe immediately (grading is deferred to end-of-day).
+    lead_id is supplied by the multi-line dialer; the PowerDialer resolves it from
+    the Call SID."""
     if not (recording_url and recording_sid):
         return
     import uuid
@@ -4965,9 +5034,12 @@ def _pd_ingest_recording(runtime: "HermesRuntime", leg_ref: str, call_sid: str,
 
     ctx = None
     try:
-        ctx = _get_power_dialer(runtime).recording_context(call_sid)
+        if lead_id:
+            ctx = _lead_recording_meta(runtime, lead_id)          # multi-line dialer
+        else:
+            ctx = _get_power_dialer(runtime).recording_context(call_sid)  # PowerDialer
     except Exception as exc:
-        print(f"[pd-recording] lead lookup failed for {call_sid}: {exc}", flush=True)
+        print(f"[pd-recording] lead lookup failed for {call_sid or lead_id}: {exc}", flush=True)
 
     data = {
         "seller_name": (ctx or {}).get("seller_name") or "Unknown",
@@ -4976,7 +5048,8 @@ def _pd_ingest_recording(runtime: "HermesRuntime", leg_ref: str, call_sid: str,
         "file_path": file_path,
         "file_name": file_name,
         "file_type": "mp3",
-        "lead_id": (ctx or {}).get("lead_id"),
+        "lead_id": (ctx or {}).get("lead_id") or lead_id,
+        "caller_id": caller_id if caller_id is not None else (ctx or {}).get("agent_id"),
         "notes": "Power dialer (auto)",
     }
     result = runtime.store.create_call_recording(data)
@@ -5020,6 +5093,7 @@ def _twilio_usage() -> dict[str, Any]:
 
 def _twilio_create_call(
     to_number: str, answer_url: str, status_callback: str, *, amd: bool = True,
+    record_callback: str | None = None,
 ) -> str | None:
     """Originate an outbound call via Twilio. Returns the Call SID, or None on failure.
 
@@ -5046,6 +5120,13 @@ def _twilio_create_call(
         # then bridged robots to the agent). A clear human is still detected in ~2-4s.
         params["MachineDetection"] = "Enable"
         params["MachineDetectionTimeout"] = "12"
+    if record_callback:
+        # Record the call (silent — no announcement). On completion Twilio POSTs to
+        # record_callback, which downloads it locally and deletes the cloud copy.
+        params["Record"] = "true"
+        params["RecordingStatusCallback"] = record_callback
+        params["RecordingStatusCallbackMethod"] = "POST"
+        params["RecordingStatusCallbackEvent"] = "completed"
     resp = _twilio_api_post("/Calls.json", params)
     if resp and resp.get("sid"):
         return resp["sid"]
@@ -5160,7 +5241,7 @@ class _DialerManager:
                 "status": "active",   # active|dialing|connected|paused|stopped|completed
                 "queue": queue,
                 "cursor": 0,
-                "lines": max(1, min(int(lines or 3), 5)),
+                "lines": max(1, min(int(lines or 5), 10)),
                 "inflight": {},       # lead_id -> {phone, name, call_sid}: calls dialed, not resolved
                 "connected": None,    # {lead_id, phone, name, call_sid}: the bridged human
                 "feed": [],           # recent auto-dispositions for the UI
@@ -5194,6 +5275,18 @@ class _DialerManager:
             if s["status"] == "paused":
                 s["status"] = "active"
                 self._fill(s, store)
+            return self._public(s)
+
+    def set_lines(self, caller_id: int, lines: int, store: Any) -> dict | None:
+        """Change how many numbers dial at once, live. Increasing tops up the ringing
+        lines immediately; decreasing lets the extra lines drain (never drops a live
+        call). Capped 1–10."""
+        with self._lock:
+            s = self._sessions.get(caller_id)
+            if not s:
+                return None
+            s["lines"] = max(1, min(int(lines), 10))
+            self._fill(s, store)   # add lines now if we raised it
             return self._public(s)
 
     def stop(self, caller_id: int) -> dict | None:
@@ -5333,7 +5426,9 @@ class _DialerManager:
             q = urllib.parse.urlencode({"caller": s["caller_id"], "lead": lead_id})
             answer_url = f"{s['base_url']}/twilio/lead-answer?{q}"
             status_cb = f"{s['base_url']}/twilio/call-status?{q}"
-            call_sid = _twilio_create_call(phone, answer_url, status_cb, amd=True)
+            record_cb = f"{s['base_url']}/twilio/recording?{q}"
+            call_sid = _twilio_create_call(phone, answer_url, status_cb, amd=True,
+                                           record_callback=record_cb)
             if not call_sid:
                 print(f"[dialer] dial FAILED {lead_id} -> {phone}", flush=True)
                 self._log(s, store, lead, "bad_number")
@@ -5381,15 +5476,30 @@ class _DialerManager:
 
     def _public(self, s: dict) -> dict:
         conn = s.get("connected")
+        # The leads currently ringing (one per line), so the UI can show WHO is
+        # being dialed — name/phone/lead_id — instead of just a count.
+        inflight = [
+            {"lead_id": lid, "name": info.get("name"), "phone": info.get("phone")}
+            for lid, info in s.get("inflight", {}).items()
+        ]
+        # A preview of what's coming next in the queue.
+        cur = s["cursor"]
+        up_next = [
+            {"lead_id": q.get("lead_id"), "name": q.get("name"), "phone": q.get("phone")}
+            for q in s["queue"][cur:cur + 10]
+        ]
         return {
             "status": s["status"],
             "paused": bool(s.get("paused_flag")),
             "conference": s["conference"],
             "lines": s.get("lines", 3),
             "dialing_lines": len(s.get("inflight", {})),
+            "inflight": inflight,
+            "up_next": up_next,
+            "remaining": max(0, len(s["queue"]) - cur),
             "current": ({"lead_id": conn["lead_id"], "name": conn.get("name"), "phone": conn.get("phone")}
                         if conn else None),
-            "cursor": s["cursor"],
+            "cursor": cur,
             "total": len(s["queue"]),
             "feed": s["feed"][-25:],
             "stats": s["stats"],
