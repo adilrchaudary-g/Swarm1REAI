@@ -30,6 +30,8 @@ downloads/
 pii/
 hermes/data/propstream.db
 hermes/data/propstream.db-*
+# Stray repo-root data dir (duplicate DB with lead PII) — never commit.
+/data/
 hermes/data/artifacts/exports/*.csv
 hermes/data/artifacts/exports/*.xlsx
 !hermes/data/

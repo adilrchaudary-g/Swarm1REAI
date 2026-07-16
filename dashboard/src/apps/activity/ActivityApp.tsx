@@ -2,7 +2,7 @@ import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Activity, Clock, Phone, AlertTriangle, CheckCircle, TrendingUp,
-  ChevronLeft, ChevronRight, Shield, FileText, Eye, RefreshCw,
+  ChevronLeft, ChevronRight, Shield, FileText, Eye, RefreshCw, Star,
 } from 'lucide-react'
 import { hermesClient } from '../../api/hermes-client'
 import { useAuthStore } from '../../store/auth-store'
@@ -335,17 +335,23 @@ function TrackerSection({ isAdmin, userId }: { isAdmin: boolean; userId: number 
 
       {/* Stats Cards */}
       {activity && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10, marginBottom: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 10, marginBottom: 16 }}>
           <StatCard label="Total Dials" value={activity.total_calls.toString()} icon={<Phone size={16} />} color="#6366f1" />
+          <StatCard
+            label="Sets"
+            value={(activity.disposition_counts?.interested ?? 0).toString()}
+            icon={<Star size={16} />}
+            color="#22c55e"
+          />
           <StatCard
             label="Billable Hours"
             value={activity.billable_hours.toString()}
             icon={<CheckCircle size={16} />}
-            color="#22c55e"
+            color="#10b981"
             sub="100+ dials/hr"
           />
           <StatCard label="Active Time" value={`${fmt(activity.active_minutes)} min`} icon={<Clock size={16} />} color="#3b82f6" />
-          <StatCard label="Dials/Hour" value={fmt(activity.calls_per_hour)} icon={<TrendingUp size={16} />} color="#f59e0b" />
+          <StatCard label="Dials/Hour" value={activity.calls_per_hour != null ? fmt(activity.calls_per_hour) : '—'} icon={<TrendingUp size={16} />} color="#f59e0b" />
           <StatCard
             label="Sessions"
             value={activity.sessions.length.toString()}

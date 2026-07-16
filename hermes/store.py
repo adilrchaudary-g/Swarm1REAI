@@ -80,6 +80,8 @@ class HermesStore:
         self._ensure_layout()
         with self._connect() as conn:
             self._initialize_schema(conn)
+            from .power_dialer import ensure_schema as _pd_ensure_schema
+            _pd_ensure_schema(conn)
         return {
             "status": "ok",
             "db_path": str(self.db_path),
@@ -1199,12 +1201,15 @@ class HermesStore:
                 "days_back": days_back,
             }
 
-    def get_dial_check(self, minutes_back: int = 15) -> dict[str, Any]:
+    def get_dial_check(self, minutes_back: int = 15, tz_name: str = "America/New_York") -> dict[str, Any]:
         self.initialize()
+        from zoneinfo import ZoneInfo
+        local_tz = ZoneInfo(tz_name)
         now = datetime.now(timezone.utc)
+        local_now = now.astimezone(local_tz)
         cutoff = (now - timedelta(minutes=minutes_back)).isoformat()
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-        today_date = now.strftime("%Y-%m-%d")
+        today_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).isoformat()
+        today_date = local_now.strftime("%Y-%m-%d")
         with self._connect() as conn:
             recent_dials = conn.execute(
                 "SELECT COUNT(*) as cnt FROM call_attempts WHERE called_at >= ?",
@@ -1225,10 +1230,13 @@ class HermesStore:
                 "today_recordings": today_recordings,
             }
 
-    def get_caller_live_status(self) -> list[dict[str, Any]]:
+    def get_caller_live_status(self, tz_name: str = "America/New_York") -> list[dict[str, Any]]:
         self.initialize()
+        from zoneinfo import ZoneInfo
+        local_tz = ZoneInfo(tz_name)
         now = datetime.now(timezone.utc)
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        local_now = now.astimezone(local_tz)
+        today_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).isoformat()
         with self._connect() as conn:
             callers = conn.execute(
                 "SELECT id, display_name FROM users WHERE role = 'caller' AND active = 1"
@@ -1267,29 +1275,40 @@ class HermesStore:
                 })
             return result
 
-    def get_daily_activity(self, days_back: int = 30) -> list[dict[str, Any]]:
+    def get_daily_activity(self, days_back: int = 30, tz_name: str = "America/New_York") -> list[dict[str, Any]]:
         self.initialize()
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=days_back)).isoformat()
+        from zoneinfo import ZoneInfo
+        local_tz = ZoneInfo(tz_name)
+        local_now = datetime.now(timezone.utc).astimezone(local_tz)
+        utc_offset_seconds = local_now.utcoffset().total_seconds()
+        utc_offset_str = f"{'+' if utc_offset_seconds >= 0 else ''}{int(utc_offset_seconds)} seconds"
+        cutoff = (local_now - timedelta(days=days_back)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        ).astimezone(timezone.utc).isoformat()
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT DATE(created_at) as day, "
+                f"SELECT DATE(datetime(created_at, '{utc_offset_str}')) as day, "
                 "SUM(CASE WHEN to_status IN ('contacted', 'interested', 'not_interested') THEN 1 ELSE 0 END) as calls, "
                 "SUM(CASE WHEN to_status = 'interested' THEN 1 ELSE 0 END) as interested, "
                 "SUM(CASE WHEN to_status = 'queued' THEN 1 ELSE 0 END) as queued, "
                 "COUNT(*) as total_transitions "
                 "FROM lead_status_history WHERE created_at >= ? "
-                "GROUP BY DATE(created_at) ORDER BY day",
+                f"GROUP BY DATE(datetime(created_at, '{utc_offset_str}')) ORDER BY day",
                 (cutoff,),
             ).fetchall()
             return [dict(r) for r in rows]
 
-    def get_tracker_kpis(self) -> dict[str, Any]:
+    def get_tracker_kpis(self, tz_name: str = "America/New_York") -> dict[str, Any]:
         self.initialize()
+        from zoneinfo import ZoneInfo
+        local_tz = ZoneInfo(tz_name)
         now = datetime.now(timezone.utc)
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-        week_start = (now - timedelta(days=now.weekday())).replace(
+        local_now = now.astimezone(local_tz)
+        today_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).isoformat()
+        local_week_start = (local_now - timedelta(days=local_now.weekday())).replace(
             hour=0, minute=0, second=0, microsecond=0
-        ).isoformat()
+        )
+        week_start = local_week_start.astimezone(timezone.utc).isoformat()
         _non_convo = (
             "'no_answer','voicemail','busy','disconnected','wrong_number','bad_number'"
         )
@@ -1334,15 +1353,20 @@ class HermesStore:
                 (week_start,),
             ).fetchone()["cnt"]
 
+            utc_offset_seconds = local_now.utcoffset().total_seconds()
+            utc_offset_str = f"{'+' if utc_offset_seconds >= 0 else ''}{int(utc_offset_seconds)} seconds"
+            history_start = (local_now - timedelta(days=14)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            ).astimezone(timezone.utc).isoformat()
             daily_rows = conn.execute(
-                "SELECT DATE(a.called_at) as day, "
+                f"SELECT DATE(datetime(a.called_at, '{utc_offset_str}')) as day, "
                 "COUNT(*) as calls, "
                 f"SUM(CASE WHEN a.disposition NOT IN ({_non_convo}) THEN 1 ELSE 0 END) as convos, "
                 "SUM(CASE WHEN a.disposition = 'interested' THEN 1 ELSE 0 END) as leads "
                 "FROM call_attempts a "
                 "WHERE a.called_at >= ? "
-                "GROUP BY DATE(a.called_at) ORDER BY day",
-                ((now - timedelta(days=14)).isoformat(),),
+                f"GROUP BY DATE(datetime(a.called_at, '{utc_offset_str}')) ORDER BY day",
+                (history_start,),
             ).fetchall()
             history = [dict(r) for r in daily_rows]
 
@@ -1360,17 +1384,22 @@ class HermesStore:
                 "history": history,
             }
 
-    def get_dial_streak(self) -> dict[str, Any]:
+    def get_dial_streak(self, tz_name: str = "America/New_York") -> dict[str, Any]:
         self.initialize()
+        from zoneinfo import ZoneInfo
+        local_tz = ZoneInfo(tz_name)
+        local_now = datetime.now(timezone.utc).astimezone(local_tz)
+        utc_offset_seconds = local_now.utcoffset().total_seconds()
+        utc_offset_str = f"{'+' if utc_offset_seconds >= 0 else ''}{int(utc_offset_seconds)} seconds"
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT DISTINCT DATE(called_at) as day FROM call_attempts ORDER BY day DESC"
+                f"SELECT DISTINCT DATE(datetime(called_at, '{utc_offset_str}')) as day FROM call_attempts ORDER BY day DESC"
             ).fetchall()
             days = [r["day"] for r in rows]
             if not days:
                 return {"current_streak": 0, "best_streak": 0, "total_active_days": 0, "last_dial_date": None}
-            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+            today = local_now.strftime("%Y-%m-%d")
+            yesterday = (local_now - timedelta(days=1)).strftime("%Y-%m-%d")
             current = 0
             if days[0] == today or days[0] == yesterday:
                 current = 1
@@ -6672,10 +6701,18 @@ Sincerely,
             graded = conn.execute(
                 "SELECT COUNT(*) as cnt FROM call_recordings WHERE my_performance_json IS NOT NULL"
             ).fetchone()["cnt"]
+            # Transcribed but not yet graded — the end-of-day grading backlog.
+            pending_grade = conn.execute(
+                """SELECT COUNT(*) as cnt FROM call_recordings
+                   WHERE transcript IS NOT NULL
+                     AND transcript NOT LIKE '(transcription failed%'
+                     AND (call_score IS NULL OR call_score = '')"""
+            ).fetchone()["cnt"]
             return {
                 "total": total,
                 "transcribed": transcribed,
                 "graded": graded,
+                "pending_grade": pending_grade,
                 "by_score": by_score,
             }
 
@@ -6944,65 +6981,64 @@ Sincerely,
                 ).fetchall()
         return [dict(r) for r in rows]
 
-    def get_caller_activity(self, user_id: int, date: str) -> dict[str, Any]:
+    def get_caller_activity(self, user_id: int, date: str, tz_name: str = "America/New_York") -> dict[str, Any]:
         """Analyze call_attempts to build a minute-by-minute activity map for a caller on a given date."""
+        from zoneinfo import ZoneInfo
+
+        local_tz = ZoneInfo(tz_name)
+
+        from datetime import datetime as dt
+        local_day_start = dt.strptime(date, "%Y-%m-%d").replace(tzinfo=local_tz)
+        local_day_end = local_day_start + timedelta(days=1)
+        utc_start = local_day_start.astimezone(timezone.utc).isoformat()
+        utc_end = local_day_end.astimezone(timezone.utc).isoformat()
+
         with self._connect() as conn:
             rows = conn.execute(
                 """SELECT called_at, disposition, phone_number, lead_id
                    FROM call_attempts
-                   WHERE caller_id = ? AND DATE(called_at) = ?
+                   WHERE caller_id = ? AND called_at >= ? AND called_at < ?
                    ORDER BY called_at ASC""",
-                (user_id, date),
+                (user_id, utc_start, utc_end),
             ).fetchall()
 
             calls = [dict(r) for r in rows]
             total_calls = len(calls)
 
+            empty_result = {
+                "user_id": user_id, "date": date, "total_calls": 0,
+                "active_minutes": 0, "billable_hours": 0, "hourly_breakdown": [],
+                "sessions": [], "buckets": {}, "gaps": [],
+                "calls_per_hour": None,
+                "first_call": None, "last_call": None, "disposition_counts": {},
+            }
+
             if total_calls == 0:
-                return {
-                    "user_id": user_id,
-                    "date": date,
-                    "total_calls": 0,
-                    "active_minutes": 0,
-                    "billable_hours": 0,
-                    "hourly_breakdown": [],
-                    "sessions": [],
-                    "buckets": {},
-                    "gaps": [],
-                    "calls_per_hour": 0.0,
-                    "first_call": None,
-                    "last_call": None,
-                    "disposition_counts": {},
-                }
+                return empty_result
 
-            from datetime import datetime as dt
-
-            timestamps = []
+            timestamps_utc = []
+            timestamps_local = []
             for c in calls:
                 try:
                     t = dt.fromisoformat(c["called_at"].replace("Z", "+00:00"))
-                    timestamps.append(t)
+                    timestamps_utc.append(t)
+                    timestamps_local.append(t.astimezone(local_tz))
                 except (ValueError, AttributeError):
                     continue
 
-            if not timestamps:
-                return {
-                    "user_id": user_id, "date": date, "total_calls": total_calls,
-                    "active_minutes": 0, "billable_hours": 0, "hourly_breakdown": [],
-                    "sessions": [], "buckets": {},
-                    "gaps": [], "calls_per_hour": 0.0,
-                    "first_call": None, "last_call": None, "disposition_counts": {},
-                }
+            if not timestamps_utc:
+                empty_result["total_calls"] = total_calls
+                return empty_result
 
             SESSION_GAP_MINUTES = 10
 
             sessions = []
-            current_session_start = timestamps[0]
-            current_session_end = timestamps[0]
+            current_session_start = timestamps_local[0]
+            current_session_end = timestamps_local[0]
             current_session_calls = 1
 
-            for i in range(1, len(timestamps)):
-                gap = (timestamps[i] - current_session_end).total_seconds() / 60
+            for i in range(1, len(timestamps_local)):
+                gap = (timestamps_local[i] - current_session_end).total_seconds() / 60
                 if gap > SESSION_GAP_MINUTES:
                     duration = max(1, (current_session_end - current_session_start).total_seconds() / 60)
                     sessions.append({
@@ -7011,11 +7047,11 @@ Sincerely,
                         "duration_min": round(duration, 1),
                         "calls": current_session_calls,
                     })
-                    current_session_start = timestamps[i]
-                    current_session_end = timestamps[i]
+                    current_session_start = timestamps_local[i]
+                    current_session_end = timestamps_local[i]
                     current_session_calls = 1
                 else:
-                    current_session_end = timestamps[i]
+                    current_session_end = timestamps_local[i]
                     current_session_calls += 1
 
             duration = max(1, (current_session_end - current_session_start).total_seconds() / 60)
@@ -7026,7 +7062,6 @@ Sincerely,
                 "calls": current_session_calls,
             })
 
-            # Gaps between sessions
             gaps = []
             for i in range(1, len(sessions)):
                 prev_end = dt.fromisoformat(sessions[i - 1]["end"])
@@ -7039,16 +7074,16 @@ Sincerely,
                     "to": curr_start.isoformat(),
                 })
 
-            # 5-minute buckets (0-287 across 24h)
+            # 5-minute buckets using local time
             buckets: dict[str, int] = {}
-            for t in timestamps:
+            for t in timestamps_local:
                 bucket_key = f"{t.hour:02d}:{(t.minute // 5) * 5:02d}"
                 buckets[bucket_key] = buckets.get(bucket_key, 0) + 1
 
-            # Per-clock-hour breakdown with 100-dial billable threshold
+            # Per-clock-hour breakdown using local time
             BILLABLE_THRESHOLD = 100
             hourly_dials: dict[int, int] = {}
-            for t in timestamps:
+            for t in timestamps_local:
                 hourly_dials[t.hour] = hourly_dials.get(t.hour, 0) + 1
 
             hourly_breakdown = []
@@ -7058,19 +7093,32 @@ Sincerely,
                 billable = count >= BILLABLE_THRESHOLD
                 if billable:
                     billable_hours += 1
+                if hour == 0:
+                    label = "12:00 AM"
+                elif hour < 12:
+                    label = f"{hour}:00 AM"
+                elif hour == 12:
+                    label = "12:00 PM"
+                else:
+                    label = f"{hour - 12}:00 PM"
                 hourly_breakdown.append({
                     "hour": hour,
-                    "label": f"{hour}:00" if hour < 12 else f"{hour - 12 if hour > 12 else 12}:00 PM" if hour >= 12 else f"{hour}:00 AM",
+                    "label": label,
                     "dials": count,
                     "billable": billable,
                     "threshold": BILLABLE_THRESHOLD,
                 })
 
             active_minutes = sum(s["duration_min"] for s in sessions)
-            span_minutes = max(1, (timestamps[-1] - timestamps[0]).total_seconds() / 60)
-            calls_per_hour = (total_calls / span_minutes) * 60 if span_minutes > 0 else 0
+            span_minutes = (timestamps_local[-1] - timestamps_local[0]).total_seconds() / 60
 
-            # Disposition breakdown
+            # Only compute calls_per_hour once we have 30+ minutes of span across 2+ hours
+            MIN_SPAN_FOR_RATE = 30
+            if span_minutes >= MIN_SPAN_FOR_RATE and len(hourly_dials) >= 2:
+                calls_per_hour: float | None = round((total_calls / span_minutes) * 60, 1)
+            else:
+                calls_per_hour = None
+
             disp_counts: dict[str, int] = {}
             for c in calls:
                 d = c.get("disposition", "unknown")
@@ -7086,36 +7134,46 @@ Sincerely,
                 "sessions": sessions,
                 "buckets": buckets,
                 "gaps": gaps,
-                "calls_per_hour": round(calls_per_hour, 1),
-                "first_call": timestamps[0].isoformat(),
-                "last_call": timestamps[-1].isoformat(),
+                "calls_per_hour": calls_per_hour,
+                "first_call": timestamps_local[0].isoformat(),
+                "last_call": timestamps_local[-1].isoformat(),
                 "disposition_counts": disp_counts,
             }
 
     def get_activity_summary(
         self, date_from: str, date_to: str, user_id: int | None = None,
+        tz_name: str = "America/New_York",
     ) -> list[dict[str, Any]]:
         """Per-caller, per-day summary of call activity vs self-reported logs."""
+        from zoneinfo import ZoneInfo
+        local_tz = ZoneInfo(tz_name)
+        local_now = datetime.now(timezone.utc).astimezone(local_tz)
+        utc_offset_seconds = local_now.utcoffset().total_seconds()
+        utc_offset_str = f"{'+' if utc_offset_seconds >= 0 else ''}{int(utc_offset_seconds)} seconds"
+
         with self._connect() as conn:
             user_filter = "AND ca.caller_id = ?" if user_id else ""
             params: list[Any] = [date_from, date_to]
             if user_id:
                 params.append(user_id)
 
+            local_date_expr = f"DATE(datetime(ca.called_at, '{utc_offset_str}'))"
+            local_hour_expr = f"CAST(strftime('%H', datetime(ca.called_at, '{utc_offset_str}')) AS INTEGER)"
+
             rows = conn.execute(
                 f"""SELECT
                       ca.caller_id as user_id,
                       u.display_name as caller_name,
-                      DATE(ca.called_at) as call_date,
+                      {local_date_expr} as call_date,
                       COUNT(*) as actual_dials,
                       MIN(ca.called_at) as first_call,
                       MAX(ca.called_at) as last_call,
                       COUNT(DISTINCT CASE WHEN ca.disposition = 'interested' THEN ca.lead_id END) as actual_leads_set
                     FROM call_attempts ca
                     JOIN users u ON u.id = ca.caller_id
-                    WHERE DATE(ca.called_at) >= ? AND DATE(ca.called_at) <= ? {user_filter}
+                    WHERE {local_date_expr} >= ? AND {local_date_expr} <= ? {user_filter}
                       AND ca.caller_id IS NOT NULL
-                    GROUP BY ca.caller_id, DATE(ca.called_at)
+                    GROUP BY ca.caller_id, {local_date_expr}
                     ORDER BY call_date DESC, caller_name""",
                 params,
             ).fetchall()
@@ -7125,21 +7183,21 @@ Sincerely,
             results = []
             for r in rows:
                 row = dict(r)
-                # Compute actual hours from first-to-last call span
                 try:
                     from datetime import datetime as dt
-                    t1 = dt.fromisoformat(row["first_call"].replace("Z", "+00:00"))
-                    t2 = dt.fromisoformat(row["last_call"].replace("Z", "+00:00"))
+                    t1 = dt.fromisoformat(row["first_call"].replace("Z", "+00:00")).astimezone(local_tz)
+                    t2 = dt.fromisoformat(row["last_call"].replace("Z", "+00:00")).astimezone(local_tz)
                     span_hours = (t2 - t1).total_seconds() / 3600
                     row["actual_span_hours"] = round(span_hours, 2)
+                    row["first_call"] = t1.isoformat()
+                    row["last_call"] = t2.isoformat()
                 except (ValueError, AttributeError, TypeError):
                     row["actual_span_hours"] = 0
 
-                # Compute billable hours: only clock hours with >= 100 dials count
                 hour_calls = conn.execute(
-                    """SELECT CAST(strftime('%H', called_at) AS INTEGER) as hr, COUNT(*) as cnt
+                    f"""SELECT {local_hour_expr.replace('ca.', '')} as hr, COUNT(*) as cnt
                        FROM call_attempts
-                       WHERE caller_id = ? AND DATE(called_at) = ?
+                       WHERE caller_id = ? AND {local_date_expr.replace('ca.', '')} = ?
                        GROUP BY hr""",
                     (row["user_id"], row["call_date"]),
                 ).fetchall()
@@ -7297,7 +7355,10 @@ Sincerely,
                    WHERE l.status = 'enriched'
                      AND l.assigned_to IS NULL
                      AND l.lead_id NOT IN (SELECT DISTINCT lead_id FROM call_attempts)
-                     AND EXISTS (SELECT 1 FROM owner_phones op WHERE op.owner_id = l.owner_id AND COALESCE(op.bad_number, 0) = 0)
+                     AND EXISTS (SELECT 1 FROM owner_phones op WHERE op.owner_id = l.owner_id
+                                   AND COALESCE(op.bad_number, 0) = 0
+                                   AND COALESCE(op.dnc, 0) = 0
+                                   AND LOWER(COALESCE(op.phone_type, '')) IN ('cell', 'mobile', 'wireless'))
                    ORDER BY COALESCE(l.motivation_score, -1) DESC, l.updated_at DESC
                    LIMIT ?""",
                 (total_needed,),
@@ -7336,8 +7397,9 @@ Sincerely,
                      MIN(l.assigned_at) as assigned_since
                    FROM users u
                    LEFT JOIN leads l ON l.assigned_to = u.id
-                   WHERE u.role = 'caller' AND u.active = 1
+                   WHERE u.active = 1
                    GROUP BY u.id
+                   HAVING u.role = 'caller' OR COUNT(l.lead_id) > 0
                    ORDER BY u.display_name""",
             ).fetchall()
         return [dict(r) for r in rows]
@@ -7385,6 +7447,58 @@ Sincerely,
                 comparison[cid] = d
 
         return comparison
+
+    def get_list_overview(self) -> list[dict[str, Any]]:
+        """Group non-archived leads by marketing list with assignee breakdown."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT COALESCE(NULLIF(l.last_list_name, ''), '(no list)') AS list_name,
+                     COUNT(*) AS total,
+                     SUM(CASE WHEN l.status = 'queued' THEN 1 ELSE 0 END) AS queued,
+                     SUM(CASE WHEN l.status = 'enriched' THEN 1 ELSE 0 END) AS available,
+                     SUM(CASE WHEN l.status = 'contacted' THEN 1 ELSE 0 END) AS contacted,
+                     MAX(l.assigned_at) AS last_assigned_at
+                   FROM leads l
+                   WHERE l.status != 'archived'
+                   GROUP BY 1
+                   ORDER BY queued DESC, total DESC""",
+            ).fetchall()
+            assignee_rows = conn.execute(
+                """SELECT COALESCE(NULLIF(l.last_list_name, ''), '(no list)') AS list_name,
+                     u.id AS user_id, u.display_name AS name, COUNT(*) AS count
+                   FROM leads l JOIN users u ON u.id = l.assigned_to
+                   WHERE l.status != 'archived'
+                   GROUP BY 1, 2""",
+            ).fetchall()
+        assignees: dict[str, list[dict[str, Any]]] = {}
+        for r in assignee_rows:
+            assignees.setdefault(r["list_name"], []).append(
+                {"user_id": r["user_id"], "name": r["name"], "count": r["count"]},
+            )
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["assignees"] = sorted(assignees.get(d["list_name"], []), key=lambda a: -a["count"])
+            result.append(d)
+        return result
+
+    def assign_list_to_caller(
+        self, list_name: str, user_id: int | None, from_user_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Reassign queued leads in a marketing list. user_id=None leaves them queued but unowned.
+        from_user_id limits the move to one assignee's share of the list."""
+        ts = now_iso()
+        where = "status = 'queued' AND COALESCE(NULLIF(last_list_name, ''), '(no list)') = ?"
+        params: list[Any] = [user_id, ts if user_id is not None else None, list_name]
+        if from_user_id is not None:
+            where += " AND assigned_to = ?"
+            params.append(from_user_id)
+        with self._connect() as conn:
+            cur = conn.execute(
+                f"UPDATE leads SET assigned_to = ?, assigned_at = ? WHERE {where}",
+                params,
+            )
+        return {"status": "ok", "reassigned": cur.rowcount, "list_name": list_name, "user_id": user_id}
 
     # ── Conversations (Mega-Agent Orchestrator) ──────────────────────────
 

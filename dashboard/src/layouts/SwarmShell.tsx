@@ -4,12 +4,12 @@ import { useUiStore, type AppTab } from '../store/ui-store'
 import { useAgentStore } from '../store/agent-store'
 import { useAuthStore } from '../store/auth-store'
 import { hermesClient } from '../api/hermes-client'
-import { Radio, ClipboardList, BarChart3, Bot, Bell, Menu, X, Check, XIcon, Eye, LogOut, User, Settings, Calendar, DollarSign, FileText, Handshake } from 'lucide-react'
+import { Radio, ClipboardList, BarChart3, Bot, Bell, Menu, X, Check, XIcon, Eye, LogOut, User, Settings, Calendar, DollarSign, FileText, Handshake, Shield } from 'lucide-react'
 import { JarvisOverlay } from '../components/JarvisOverlay'
 import type { Proposal } from '../api/types'
 import type { Permission } from '../auth/permissions'
 
-const allTabs: { id: AppTab; label: string; icon: React.ReactNode; requires: Permission }[] = [
+const allTabs: { id: AppTab; label: string; icon: React.ReactNode; requires: Permission; adminOnly?: boolean }[] = [
   { id: 'lead-gen', label: 'Lead Gen', icon: <Radio size={18} />, requires: 'view:call_list' },
   { id: 'underwriting', label: 'Underwriting', icon: <ClipboardList size={18} />, requires: 'view:underwriting' },
   { id: 'dispo', label: 'Dispo', icon: <Handshake size={18} />, requires: 'view:dispo' },
@@ -18,6 +18,7 @@ const allTabs: { id: AppTab; label: string; icon: React.ReactNode; requires: Per
   { id: 'schedule', label: 'Schedule', icon: <Calendar size={18} />, requires: 'view:schedule' },
   { id: 'activity', label: 'Daily Log', icon: <FileText size={18} />, requires: 'view:activity' },
   { id: 'finances', label: 'Finances', icon: <DollarSign size={18} />, requires: 'view:finances' },
+  { id: 'security', label: 'SABSA', icon: <Shield size={18} />, requires: 'view:security', adminOnly: true },
   { id: 'settings', label: 'Settings', icon: <Settings size={18} />, requires: 'action:manage_users' },
 ]
 
@@ -302,7 +303,7 @@ export function SwarmShell({ children }: { children: React.ReactNode }) {
   const isMobile = useIsMobile()
   const [drawerOpen, setDrawerOpen] = useState(false)
 
-  const tabs = allTabs.filter((tab) => can(tab.requires))
+  const tabs = allTabs.filter((tab) => can(tab.requires) && (!tab.adminOnly || user?.role === 'admin'))
 
   useEffect(() => {
     if (tabs.length > 0 && !tabs.some((t) => t.id === activeApp)) {
@@ -545,6 +546,7 @@ export function SwarmShell({ children }: { children: React.ReactNode }) {
               </span>
             )}
           </div>
+          <Clock />
           <NotificationBell />
         </div>
 
@@ -552,6 +554,34 @@ export function SwarmShell({ children }: { children: React.ReactNode }) {
           {children}
         </div>
       </main>
+    </div>
+  )
+}
+
+// Always-visible real-time clock in US Eastern (12-hour), so the caller always
+// knows the time regardless of their machine's timezone.
+function Clock() {
+  const [now, setNow] = useState(() => new Date())
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 1000)
+    return () => clearInterval(id)
+  }, [])
+  const time = now.toLocaleTimeString('en-US', {
+    timeZone: 'America/New_York',
+    hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true,
+  })
+  return (
+    <div
+      title="Current Eastern time"
+      style={{
+        display: 'flex', alignItems: 'baseline', gap: 4,
+        padding: '4px 10px', borderRadius: 8,
+        background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)',
+        fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap',
+      }}
+    >
+      <span style={{ fontSize: 13, fontWeight: 700, color: '#cbd5e1', letterSpacing: 0.5 }}>{time}</span>
+      <span style={{ fontSize: 10, color: '#475569', fontWeight: 600 }}>ET</span>
     </div>
   )
 }

@@ -141,6 +141,8 @@ function OverviewSection() {
         ))}
       </div>
 
+      <TwilioLiveCard />
+
       <div style={{
         padding: 20,
         background: 'rgba(255,255,255,0.02)',
@@ -152,6 +154,67 @@ function OverviewSection() {
         <CostBar label="Twilio Autodialer" amount={30} total={summary.total_monthly_cost} color="#f97316" />
         <CostBar label={`Callers (3x ~$200/mo)`} amount={summary.monthly_caller_cost} total={summary.total_monthly_cost} color="#eab308" />
       </div>
+    </div>
+  )
+}
+
+// Live Twilio balance + confirmed spend (real charges from Twilio, not estimates).
+function TwilioLiveCard() {
+  const { data: tw, isError } = useQuery({
+    queryKey: ['twilio-usage'],
+    queryFn: hermesClient.twilio.usage,
+    refetchInterval: 60_000,
+  })
+
+  const money = (n: number | null | undefined) =>
+    n == null ? '—' : `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+
+  const lowBalance = tw?.balance != null && tw.balance < 10
+
+  return (
+    <div style={{
+      padding: 20, marginBottom: 24,
+      background: 'rgba(34,197,94,0.03)',
+      border: '1px solid rgba(34,197,94,0.15)',
+      borderRadius: 12,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+        <h3 style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ width: 7, height: 7, borderRadius: 999, background: '#22c55e',
+                         boxShadow: '0 0 8px #22c55e' }} />
+          Twilio — Live (confirmed charges)
+        </h3>
+        {tw?.as_of && (
+          <span style={{ fontSize: 10, color: '#475569' }}>
+            as of {new Date(tw.as_of).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+          </span>
+        )}
+      </div>
+      <div style={{ fontSize: 11, color: '#475569', marginBottom: 16 }}>
+        Real money from your Twilio account — not the dialer's estimate. Per-call spend lags a few minutes.
+      </div>
+
+      {isError || (tw && !tw.configured) ? (
+        <div style={{ color: '#f59e0b', fontSize: 12 }}>Twilio not configured — can't read balance.</div>
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+          <TwStat label="Balance remaining" value={money(tw?.balance)}
+            color={lowBalance ? '#ef4444' : '#22c55e'}
+            sub={lowBalance ? '⚠ low — top up soon' : 'available funds'} big />
+          <TwStat label="Spent today" value={money(tw?.spend_today)} color="#eab308" />
+          <TwStat label="Spent this month" value={money(tw?.spend_this_month)} color="#f97316" />
+        </div>
+      )}
+    </div>
+  )
+}
+
+function TwStat({ label, value, color, sub, big }: { label: string; value: string; color: string; sub?: string; big?: boolean }) {
+  return (
+    <div style={{ padding: 14, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: 10 }}>
+      <div style={{ fontSize: 10, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600, marginBottom: 6 }}>{label}</div>
+      <div style={{ fontSize: big ? 26 : 20, fontWeight: 800, color, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+      {sub && <div style={{ fontSize: 10, color: '#475569', marginTop: 4 }}>{sub}</div>}
     </div>
   )
 }

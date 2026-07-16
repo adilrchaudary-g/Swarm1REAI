@@ -27,7 +27,8 @@ class AgentOrchestrator:
         self.proxy = ClaudeProxyClient(proxy_url)
 
     def start_scheduler(self) -> None:
-        pass
+        from ..discord_notify import start_daily_scheduler
+        start_daily_scheduler(self.store)
 
     def stop_scheduler(self) -> None:
         pass

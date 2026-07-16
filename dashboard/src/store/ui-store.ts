@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-export type AppTab = 'lead-gen' | 'underwriting' | 'dispo' | 'kpi' | 'agents' | 'schedule' | 'activity' | 'finances' | 'settings'
+export type AppTab = 'lead-gen' | 'underwriting' | 'dispo' | 'kpi' | 'agents' | 'schedule' | 'activity' | 'finances' | 'security' | 'settings'
 
 interface UiState {
   activeApp: AppTab

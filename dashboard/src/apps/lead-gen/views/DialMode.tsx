@@ -1,8 +1,11 @@
-import { useState, useMemo, useCallback, useEffect } from 'react'
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Phone, X, ArrowLeft, ArrowRight, PhoneCall, AlertTriangle, PhoneIncoming, FileText } from 'lucide-react'
+import { Phone, X, ArrowLeft, ArrowRight, PhoneCall, AlertTriangle, PhoneIncoming, FileText, CheckCircle } from 'lucide-react'
 import { hermesClient } from '../../../api/hermes-client'
+import { useAutoDialer } from '../hooks/useAutoDialer'
+import { DialerModeToggle, CallStatusBar, AutoAdvanceCountdown, AutoDialPauseResume, SessionCostBar } from './AutoDialerControls'
+import { AutoSession } from './AutoSession'
 import type { Lead } from '../../../api/types'
 
 function formatPhone(raw: string): string {
@@ -32,7 +35,7 @@ const TIER_COLORS: Record<string, string> = {
   hot: '#ef4444', warm: '#f97316', lukewarm: '#eab308', cold: '#3b82f6', ice: '#94a3b8',
 }
 
-type Phase = 'idle' | 'answered' | 'no_answer' | 'interested' | 'schedule_fu'
+type Phase = 'idle' | 'answered' | 'no_answer' | 'interested' | 'schedule_fu' | 'set_confirm' | 'set_sent'
 
 interface Props {
   leads: Lead[]
@@ -44,10 +47,14 @@ export function DialMode({ leads, onClose }: Props) {
   const isMobile = useIsMobile()
   const [frozenLeads] = useState(() => [...leads])
   const [currentIndex, setCurrentIndex] = useState(0)
+  const [autoSession, setAutoSession] = useState(false)
   const [phase, setPhase] = useState<Phase>('idle')
   const [showDetail, setShowDetail] = useState(false)
   const [note, setNote] = useState('')
   const [fuDate, setFuDate] = useState('')
+  const [setDate, setSetDate] = useState('')
+  const [setTime, setSetTime] = useState('')
+  const [setSending, setSetSending] = useState(false)
   const [skippedIds, setSkippedIds] = useState<Set<string>>(new Set())
   const [voicemailIds, setVoicemailIds] = useState<string[]>([])
   const [lastBadNumberId, setLastBadNumberId] = useState<string | null>(null)
@@ -58,6 +65,9 @@ export function DialMode({ leads, onClose }: Props) {
   const [callbackLoading, setCallbackLoading] = useState(false)
   const [callbackError, setCallbackError] = useState('')
   const [panelOpen, setPanelOpen] = useState(!isMobile)
+
+  const autoDialer = useAutoDialer({ countdownSeconds: 3 })
+  const pendingAutoDialRef = useRef(false)
 
   const MAX_ATTEMPTS = 6
   const { data: attemptCounts } = useQuery({
@@ -145,13 +155,46 @@ export function DialMode({ leads, onClose }: Props) {
     setShowDetail(false)
     setNote('')
     setFuDate('')
+    setSetDate('')
+    setSetTime('')
+    setSetSending(false)
     setPhoneIndex(0)
     if (hasNext) {
       setCurrentIndex((i) => i + 1)
     } else {
       setCurrentIndex(0)
     }
+    if (autoDialer.dialerMode === 'auto') {
+      pendingAutoDialRef.current = true
+      autoDialer.onDispositionComplete()
+    }
   }
+
+  // Auto-dial: when countdown finishes and we're in auto mode, dial the current lead
+  useEffect(() => {
+    if (
+      autoDialer.dialerMode === 'auto' &&
+      autoDialer.autoDialState === 'idle' &&
+      autoDialer.callStatus === 'ready' &&
+      pendingAutoDialRef.current &&
+      lead &&
+      rawPhone
+    ) {
+      pendingAutoDialRef.current = false
+      autoDialer.startCall(`+${toTelDigits(rawPhone)}`)
+    }
+  }, [autoDialer.autoDialState, autoDialer.callStatus, autoDialer.dialerMode, lead, rawPhone])
+
+  // Auto-detect no-answer from Twilio: if call ended without ever being connected, pre-select no_answer phase
+  useEffect(() => {
+    if (autoDialer.dialerMode === 'auto' && autoDialer.callStatus === 'ended' && autoDialer.autoDialState === 'waiting_disposition') {
+      if (autoDialer.callDurationAtEnd === 0) {
+        setPhase('no_answer')
+      } else {
+        setPhase('answered')
+      }
+    }
+  }, [autoDialer.callStatus, autoDialer.autoDialState, autoDialer.callDurationAtEnd, autoDialer.dialerMode])
 
   function logCall(disposition: string, notes?: string) {
     if (lead) hermesClient.leads.logCall(lead.lead_id, disposition, notes, rawPhone || undefined).catch(() => {})
@@ -216,6 +259,16 @@ export function DialMode({ leads, onClose }: Props) {
     setPhase('schedule_fu')
   }
 
+  async function handleConfirmSet() {
+    if (!lead || !setDate || !setTime) return
+    setSetSending(true)
+    const appointmentAt = `${setDate}T${setTime}:00`
+    await hermesClient.leads.confirmSet(lead.lead_id, appointmentAt, note.trim() || undefined, rawPhone || undefined)
+    invalidate()
+    setSetSending(false)
+    setPhase('set_sent')
+  }
+
   async function handleSaveFollowUp() {
     const id = lead!.lead_id
     if (fuDate) {
@@ -250,6 +303,23 @@ export function DialMode({ leads, onClose }: Props) {
     ? { minHeight: 48, fontSize: 15 }
     : {}
 
+  // Auto-dialer takes over the whole surface with its own server-driven session.
+  if (autoSession) {
+    return (
+      <Overlay onClose={() => { setAutoSession(false); onClose() }} isMobile={isMobile} rightPanel={
+        !isMobile && panelOpen ? <ScriptPanel onClose={() => setPanelOpen(false)} /> : undefined
+      }>
+        <AutoSession
+          leads={queue}
+          autoDialer={autoDialer}
+          onExit={() => setAutoSession(false)}
+          scriptOpen={!isMobile && panelOpen}
+          onToggleScript={!isMobile ? () => setPanelOpen((o) => !o) : undefined}
+        />
+      </Overlay>
+    )
+  }
+
   if (!lead) {
     return (
       <Overlay onClose={onClose} isMobile={isMobile}>
@@ -273,8 +343,23 @@ export function DialMode({ leads, onClose }: Props) {
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{ color: '#6366f1', fontSize: 13, fontWeight: 700, letterSpacing: 1 }}>DIAL TIME</div>
+          <div style={{ color: autoDialer.dialerMode === 'auto' ? '#22c55e' : '#6366f1', fontSize: 13, fontWeight: 700, letterSpacing: 1 }}>
+            {autoDialer.dialerMode === 'auto' ? 'POWER DIAL' : 'DIAL TIME'}
+          </div>
           <span style={{ color: '#334155', fontSize: 12 }}>{currentIndex + 1} / {total}</span>
+          <DialerModeToggle
+            mode={autoSession ? 'auto' : 'manual'}
+            onToggle={(m) => setAutoSession(m === 'auto')}
+            twilioAvailable={autoDialer.twilioReady || autoDialer.twilioInitializing}
+          />
+          {autoDialer.dialerMode === 'auto' && (
+            <AutoDialPauseResume
+              isPaused={autoDialer.isPaused}
+              onToggle={autoDialer.togglePause}
+              queuePosition={currentIndex + 1}
+              queueTotal={total}
+            />
+          )}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           {!isMobile && (
@@ -301,6 +386,22 @@ export function DialMode({ leads, onClose }: Props) {
       <div style={{ height: 3, background: '#16162a', borderRadius: 2, marginBottom: 20 }}>
         <div style={{ height: '100%', background: '#6366f1', borderRadius: 2, width: `${((currentIndex + 1) / total) * 100}%`, transition: 'width 0.3s' }} />
       </div>
+
+      {/* Call Status Bar — auto mode only */}
+      {autoDialer.dialerMode === 'auto' && autoDialer.callStatus !== 'ready' && (
+        <CallStatusBar
+          callStatus={autoDialer.callStatus}
+          elapsedSeconds={autoDialer.elapsedSeconds}
+          isMuted={autoDialer.isMuted}
+          isMockMode={autoDialer.isMockMode}
+          onMute={autoDialer.toggleMute}
+          onHangUp={autoDialer.hangUp}
+          leadName={lead.owner_name}
+          leadAddress={lead.address_full || lead.address_street || null}
+          phoneNumber={phone}
+          isMobile={isMobile}
+        />
+      )}
 
       {isOverDialed && (
         <div style={{
@@ -356,8 +457,52 @@ export function DialMode({ leads, onClose }: Props) {
           </span>
         </div>
 
-        {/* Phone number — tappable on mobile */}
-        {telHref ? (
+        {/* Phone number — auto mode shows Dial button, manual mode keeps tel: link */}
+        {autoDialer.dialerMode === 'auto' ? (
+          rawPhone ? (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 10,
+              padding: isMobile ? '14px 16px' : '10px 14px',
+              background: '#111119', borderRadius: 14, marginBottom: 12,
+            }}>
+              <Phone size={18} color="#22c55e" />
+              <span style={{
+                color: '#e2e8f0', fontSize: isMobile ? 24 : 22, fontWeight: 700, letterSpacing: 1, flex: 1,
+              }}>
+                {phone}
+              </span>
+              {totalPhones > 1 && (
+                <span style={{ color: '#6366f1', fontSize: 12, fontWeight: 700 }}>
+                  ({phoneIndex + 1}/{totalPhones})
+                </span>
+              )}
+              {autoDialer.callStatus === 'ready' && autoDialer.autoDialState !== 'countdown' && (
+                <button
+                  onClick={() => {
+                    pendingAutoDialRef.current = false
+                    autoDialer.startCall(`+${toTelDigits(rawPhone)}`)
+                  }}
+                  style={{
+                    ...btn, background: '#22c55e', color: '#fff',
+                    padding: '8px 20px', fontSize: 13, fontWeight: 700, borderRadius: 8,
+                  }}
+                >
+                  Dial
+                </button>
+              )}
+            </div>
+          ) : (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              padding: '10px 14px', background: '#12121c', borderRadius: 6, marginBottom: 12,
+            }}>
+              <Phone size={18} color="#ef4444" />
+              <span style={{ color: '#ef4444', fontSize: isMobile ? 18 : 22, fontWeight: 700 }}>
+                No phone on file
+              </span>
+            </div>
+          )
+        ) : telHref ? (
           <a
             href={telHref}
             style={{
@@ -506,13 +651,81 @@ export function DialMode({ leads, onClose }: Props) {
             }}
           />
           <div style={{ display: 'flex', gap: 10 }}>
-            <button onClick={handleSaveInterested} style={{ ...btn, ...mobBtn, flex: 1, background: '#22c55e', color: '#fff', padding: '10px 0', fontSize: 13, fontWeight: 600 }}>
+            <button onClick={() => setPhase('set_confirm')} style={{ ...btn, ...mobBtn, flex: 1, background: '#22c55e', color: '#fff', padding: '10px 0', fontSize: 13, fontWeight: 600 }}>
+              Set
+            </button>
+            <button onClick={handleSaveInterested} style={{ ...btn, ...mobBtn, flex: 1, background: '#1a1a2e', color: '#eab308', padding: '10px 0', fontSize: 13, fontWeight: 600 }}>
               Save & Schedule Follow-Up
             </button>
             <button onClick={() => setPhase('answered')} style={{ ...btn, ...mobBtn, background: '#23232a', color: '#94a3b8', padding: '10px 16px', fontSize: 12 }}>
               Back
             </button>
           </div>
+        </div>
+      )}
+
+      {phase === 'set_confirm' && (
+        <div>
+          <div style={{ color: '#22c55e', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+            Book the Appointment
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexDirection: isMobile ? 'column' : 'row' }}>
+            <div style={{ flex: 1 }}>
+              <label style={{ fontSize: 11, color: '#475569', display: 'block', marginBottom: 4 }}>Date</label>
+              <input
+                type="date"
+                value={setDate}
+                onChange={(e) => setSetDate(e.target.value)}
+                style={{
+                  width: '100%', padding: isMobile ? '12px 10px' : '8px 10px', background: '#0a0a12', border: '1px solid #1e1e2e',
+                  borderRadius: 4, color: '#cbd5e1', fontSize: isMobile ? 16 : 13, boxSizing: 'border-box',
+                }}
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <label style={{ fontSize: 11, color: '#475569', display: 'block', marginBottom: 4 }}>Time</label>
+              <input
+                type="time"
+                value={setTime}
+                onChange={(e) => setSetTime(e.target.value)}
+                style={{
+                  width: '100%', padding: isMobile ? '12px 10px' : '8px 10px', background: '#0a0a12', border: '1px solid #1e1e2e',
+                  borderRadius: 4, color: '#cbd5e1', fontSize: isMobile ? 16 : 13, boxSizing: 'border-box',
+                }}
+              />
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button
+              onClick={handleConfirmSet}
+              disabled={!setDate || !setTime || setSending}
+              style={{
+                ...btn, ...mobBtn, flex: 1, padding: '10px 0', fontSize: 13, fontWeight: 600,
+                background: setDate && setTime && !setSending ? '#22c55e' : '#222',
+                color: setDate && setTime && !setSending ? '#fff' : '#555',
+              }}
+            >
+              {setSending ? 'Sending...' : 'Confirm Set'}
+            </button>
+            <button onClick={() => setPhase('interested')} style={{ ...btn, ...mobBtn, background: '#23232a', color: '#94a3b8', padding: '10px 16px', fontSize: 12 }}>
+              Back
+            </button>
+          </div>
+        </div>
+      )}
+
+      {phase === 'set_sent' && (
+        <div style={{ textAlign: 'center', padding: '16px 0' }}>
+          <CheckCircle size={40} color="#22c55e" style={{ marginBottom: 8 }} />
+          <div style={{ color: '#22c55e', fontSize: 15, fontWeight: 600, marginBottom: 4 }}>
+            Sent to Adil
+          </div>
+          <div style={{ color: '#64748b', fontSize: 12, marginBottom: 16 }}>
+            Set booked and posted to Discord
+          </div>
+          <button onClick={() => advanceNext(lead!.lead_id)} style={{ ...btn, ...mobBtn, background: '#6366f1', color: '#fff', padding: '10px 24px', fontSize: 13, fontWeight: 600 }}>
+            Next Lead
+          </button>
         </div>
       )}
 
@@ -579,6 +792,27 @@ export function DialMode({ leads, onClose }: Props) {
             Skip Lead <ArrowRight size={isMobile ? 16 : 12} style={{ marginLeft: 4, verticalAlign: 'middle' }} />
           </button>
         </div>
+      )}
+
+      {/* Auto-advance countdown */}
+      {autoDialer.dialerMode === 'auto' && autoDialer.autoDialState === 'countdown' && (
+        <AutoAdvanceCountdown
+          secondsRemaining={autoDialer.countdownRemaining}
+          totalSeconds={3}
+          onSkip={autoDialer.skipCountdown}
+          onPause={autoDialer.togglePause}
+          nextLeadName={queue[currentIndex + 1]?.owner_name || null}
+        />
+      )}
+
+      {/* Session cost tracker — auto mode only */}
+      {autoDialer.dialerMode === 'auto' && (
+        <SessionCostBar
+          calls={autoDialer.sessionStats.calls}
+          connected={autoDialer.sessionStats.connected}
+          totalSeconds={autoDialer.sessionStats.totalSeconds}
+          estimatedCost={autoDialer.sessionStats.estimatedCost}
+        />
       )}
 
       {/* Callback section */}
@@ -786,6 +1020,53 @@ function DetailExpand({ lead, isMobile }: { lead: Lead; isMobile: boolean }) {
       )}
 
       <CallHistory leadId={lead.lead_id} />
+      <LeadRecordings leadId={lead.lead_id} />
+    </div>
+  )
+}
+
+function LeadRecordings({ leadId }: { leadId: string }) {
+  const { data: recordings } = useQuery({
+    queryKey: ['lead-recordings', leadId],
+    queryFn: () => hermesClient.callRecordings.byLead(leadId),
+  })
+
+  if (!recordings || recordings.length === 0) return null
+
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase', marginBottom: 6 }}>
+        Call Recordings ({recordings.length})
+      </div>
+      {recordings.map((r) => {
+        const dt = r.call_date ? new Date(r.call_date) : null
+        const when = dt ? dt.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true }) : ''
+        return (
+          <div key={r.id} style={{
+            display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8,
+            padding: '8px 10px', background: '#0d0d14', border: '1px solid #1a1a28', borderRadius: 8,
+          }}>
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div style={{ fontSize: 12, color: '#cbd5e1', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span>{when}</span>
+                {r.call_score
+                  ? <span style={{ color: '#22c55e', fontWeight: 600 }}>{r.call_score}</span>
+                  : r.transcript
+                    ? <span style={{ color: '#64748b', fontSize: 10 }}>awaiting grade</span>
+                    : <span style={{ color: '#64748b', fontSize: 10 }}>transcribing…</span>}
+              </div>
+              {r.transcript && (
+                <div style={{ fontSize: 11, color: '#64748b', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {r.transcript.slice(0, 120)}
+                </div>
+              )}
+            </div>
+            {r.file_path && (
+              <audio controls preload="none" src={hermesClient.callRecordings.audioUrl(r.id)} style={{ height: 32, maxWidth: 200 }} />
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }

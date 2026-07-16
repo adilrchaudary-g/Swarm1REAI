@@ -81,6 +81,10 @@ export const hermesClient = {
         post<{ status: string; assigned: Record<number, number>; total: number }>('/leads/assignments/auto', { caller_ids: callerIds, count_per_caller: countPerCaller }),
       compare: (callerIds: number[]) =>
         get<Record<number, any>>(`/leads/assignments/compare?caller_ids=${callerIds.join(',')}`),
+      lists: () =>
+        get<Array<{ list_name: string; total: number; queued: number; available: number; contacted: number; last_assigned_at: string | null; assignees: Array<{ user_id: number; name: string; count: number }> }>>('/leads/lists'),
+      assignList: (listName: string, userId: number | null, fromUserId?: number) =>
+        post<{ status: string; reassigned: number; list_name: string; user_id: number | null }>('/leads/assignments/assign-list', { list_name: listName, user_id: userId, from_user_id: fromUserId }),
     },
     updateStatus: (id: string, status: string, reason?: string) =>
       post<{ status: string; lead_id: string }>(`/leads/${id}/status`, { status, reason }),
@@ -92,6 +96,8 @@ export const hermesClient = {
       post<{ status: string; updated: number; errors?: string[] }>('/leads/bulk-status', { lead_ids: leadIds, status, reason }),
     logCall: (id: string, disposition: string, notes?: string, phone_number?: string) =>
       post<{ status: string; disposition: string; called_at: string; phone_number?: string }>(`/leads/${id}/calls`, { disposition, notes, phone_number }),
+    confirmSet: (id: string, appointmentAt: string, notes?: string, phoneNumber?: string) =>
+      post<{ status: string; lead_id: string; discord_sent: boolean }>(`/leads/${id}/set`, { appointment_at: appointmentAt, notes, phone_number: phoneNumber }),
     callHistory: (id: string) =>
       get<Array<{ id: number; lead_id: string; disposition: string; notes: string | null; called_at: string; phone_number: string | null }>>(`/leads/${id}/calls`),
     lookupByPhone: async (phone: string): Promise<Lead | null> => {
@@ -409,6 +415,7 @@ export const hermesClient = {
       post<{ status: string; id: number }>(`/call-recordings/${id}/transcribe`),
     grade: (id: number) =>
       post<{ status: string; id: number }>(`/call-recordings/${id}/grade`),
+    gradePending: () => post<{ queued: number }>('/pd/recordings/grade-pending'),
     audioUrl: (id: number) => `${BASE}/call-recordings/${id}/audio?token=${encodeURIComponent(localStorage.getItem('swarm_token') || '')}`,
     byLead: (leadId: string) =>
       get<CallRecording[]>(`/call-recordings/by-lead/${encodeURIComponent(leadId)}`),
@@ -554,4 +561,90 @@ export const hermesClient = {
     cancel: (confirmationId: number) =>
       post<{ status: string; conversation_id: number }>(`/chat/cancel/${confirmationId}`, {}),
   },
+
+  twilio: {
+    status: () =>
+      get<{ configured: boolean; account_sid?: string }>('/twilio/status'),
+    getToken: () =>
+      get<{ token: string; identity: string }>('/twilio/token'),
+    usage: () => get<TwilioUsage>('/twilio/usage'),
+  },
+
+  dialer: {
+    start: (queue: Array<{ lead_id: string; phone: string; name?: string }>) =>
+      post<DialerSessionState>('/dialer/session/start', { queue }),
+    pause: () => post<DialerSessionState>('/dialer/session/pause', {}),
+    resume: () => post<DialerSessionState>('/dialer/session/resume', {}),
+    stop: () => post<DialerSessionState>('/dialer/session/stop', {}),
+    state: () => get<DialerSessionState>('/dialer/session/state'),
+    disposition: (leadId: string, disposition: string, note?: string) =>
+      post<DialerSessionState>('/dialer/disposition', { lead_id: leadId, disposition, note }),
+  },
+
+  // Power dialer (spec build) — one leg per agent, sequential, zero abandonment.
+  pd: {
+    start: () => post<{ status: string }>('/pd/start', {}),
+    stop: () => post<{ status: string }>('/pd/stop', {}),
+    state: () => get<PowerDialerState>('/pd/state'),
+    metrics: (hours = 24, scope: 'mine' | 'all' = 'mine') =>
+      get<PowerDialerMetrics>(`/pd/metrics?hours=${hours}&scope=${scope}`),
+    disposition: (code: string, notes?: string, callbackAt?: string, dncRequest?: boolean) =>
+      post<{ ok: boolean }>('/pd/disposition', { code, notes, callback_at: callbackAt, dnc_request: dncRequest }),
+  },
+}
+
+export interface TwilioUsage {
+  configured: boolean
+  balance: number | null
+  currency: string
+  spend_today: number
+  spend_this_month: number
+  spend_last_30d: number
+  as_of: string
+}
+
+export interface PowerDialerMetrics {
+  window_hours: number
+  dials: number
+  connects: number
+  connect_rate: number
+  outcomes: { human: number; machine: number; no_answer: number; busy: number; failed: number }
+  dispositions: Record<string, number>
+  conversations: number
+  talk_seconds: number
+  avg_talk_seconds: number
+  est_dial_cost: number
+  cost_per_connect: number
+}
+
+export interface PowerDialerState {
+  active: boolean
+  status: 'idle' | 'active' | 'connected'
+  conference?: string | null
+  connected?: {
+    lead_id: string
+    owner_name?: string | null
+    address_full?: string | null
+    mao?: number | null
+    persona_primary?: string | null
+    motivation_tier?: string | null
+    motivation_score?: number | null
+  } | null
+}
+
+export interface DialerSessionState {
+  status: 'idle' | 'active' | 'dialing' | 'connected' | 'paused' | 'stopped' | 'completed'
+  paused?: boolean
+  conference?: string
+  lines?: number
+  dialing_lines?: number
+  current?: { lead_id: string; name?: string | null; phone?: string } | null
+  cursor?: number
+  total?: number
+  feed?: Array<{ lead_id: string; name?: string | null; disposition: string; at: string }>
+  stats?: { dialed: number; connected: number; machine: number; no_answer: number; bad: number }
+  cost?: {
+    total: number; detection: number; talk: number; session_leg: number
+    billable_minutes: number; session_minutes: number
+  }
 }

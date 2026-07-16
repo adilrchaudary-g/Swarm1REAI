@@ -13,6 +13,7 @@ import { FinancesApp } from './apps/finances/FinancesApp'
 import { ActivityApp } from './apps/activity/ActivityApp'
 import { UserManagement } from './apps/settings/UserManagement'
 import { DispoApp } from './apps/dispo/DispoApp'
+import { SecurityApp } from './apps/security/SecurityApp'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -43,6 +44,8 @@ function AppRouter() {
       return <ActivityApp />
     case 'finances':
       return <FinancesApp />
+    case 'security':
+      return <SecurityApp />
     case 'settings':
       return <UserManagement />
   }

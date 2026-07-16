@@ -20,6 +20,7 @@ export type Permission =
   | 'view:schedule'
   | 'view:activity'
   | 'view:finances'
+  | 'view:security'
   | 'action:manage_leads'
   | 'action:manage_users'
   | '*'

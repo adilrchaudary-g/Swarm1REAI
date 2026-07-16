@@ -6,14 +6,16 @@ import { SourcesPanel } from './views/SourcesPanel'
 import { MarketSelector } from './views/MarketSelector'
 import { DistressedProperties } from './views/DistressedProperties'
 import { CallRecordingsPanel } from './views/CallRecordingsPanel'
+import { ListAssignments } from './views/ListAssignments'
 import { ContractsPanel } from '../contracts/ContractsPanel'
 import type { Permission } from '../../auth/permissions'
 
-type View = 'pipeline' | 'call-list' | 'recordings' | 'contracts' | 'distressed' | 'sources' | 'markets'
+type View = 'pipeline' | 'call-list' | 'assignments' | 'recordings' | 'contracts' | 'distressed' | 'sources' | 'markets'
 
 const allViews: { id: View; label: string; requires: Permission }[] = [
   { id: 'pipeline', label: 'Pipeline', requires: 'view:pipeline' },
   { id: 'call-list', label: 'Call List', requires: 'view:call_list' },
+  { id: 'assignments', label: 'Assignments', requires: 'action:manage_leads' },
   { id: 'recordings', label: 'Recordings', requires: 'view:recordings' },
   { id: 'contracts', label: 'Contracts', requires: 'view:contracts' },
   { id: 'distressed', label: 'Distressed', requires: 'view:distressed' },
@@ -68,6 +70,7 @@ export function LeadGenApp() {
 
       {view === 'pipeline' && <PipelineDashboard />}
       {view === 'call-list' && <CallList />}
+      {view === 'assignments' && <ListAssignments />}
       {view === 'recordings' && <CallRecordingsPanel />}
       {view === 'contracts' && <ContractsPanel />}
       {view === 'distressed' && <DistressedProperties />}

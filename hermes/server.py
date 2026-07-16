@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import mimetypes
 import os
@@ -9,7 +12,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -283,8 +286,10 @@ def _handle_recording_upload(handler: Any, runtime: "HermesRuntime") -> dict[str
     return result
 
 
-def _transcribe_and_grade(runtime: "HermesRuntime", rec_id: int) -> None:
-    """Transcribe audio with local mlx-whisper, then grade the transcript."""
+def _transcribe_and_grade(runtime: "HermesRuntime", rec_id: int, grade: bool = True) -> None:
+    """Transcribe audio locally with whisper, then (optionally) grade the transcript.
+    Pass grade=False to transcribe only — used by the power dialer, which defers
+    grading to an end-of-day batch to save tokens."""
     rec = runtime.store.get_call_recording(rec_id)
     if not rec or not rec.get("file_path"):
         return
@@ -337,7 +342,56 @@ def _transcribe_and_grade(runtime: "HermesRuntime", rec_id: int) -> None:
 
     runtime.store.update_call_recording(rec_id, {"transcript": transcript})
     _auto_link_recording(runtime, rec_id)
-    _grade_recording(runtime, rec_id, transcript)
+    if grade:
+        _grade_recording(runtime, rec_id, transcript)
+
+
+def _grade_pending_recordings(runtime: "HermesRuntime") -> int:
+    """End-of-day batch: grade every recording that has a real transcript but no
+    grade yet. Returns the number processed. Safe to call repeatedly (idempotent —
+    already-graded rows are skipped)."""
+    with runtime.store._connect() as conn:
+        rows = conn.execute(
+            """SELECT id, transcript FROM call_recordings
+               WHERE transcript IS NOT NULL
+                 AND transcript NOT LIKE '(transcription failed%'
+                 AND (call_score IS NULL OR call_score = '')
+               ORDER BY created_at ASC"""
+        ).fetchall()
+    pending = [(r["id"], r["transcript"]) for r in rows]
+    if pending:
+        print(f"[pd-recording] grading {len(pending)} pending recording(s)…", flush=True)
+    for rec_id, transcript in pending:
+        try:
+            _grade_recording(runtime, rec_id, transcript)
+        except Exception as exc:
+            print(f"[pd-recording] grade failed for {rec_id}: {exc}", flush=True)
+    return len(pending)
+
+
+def _pd_grade_scheduler(runtime: "HermesRuntime") -> None:
+    """Nightly batch-grade at PD_GRADE_HOUR_ET (default 21:00 America/New_York).
+    Mirrors the daily-stats scheduler pattern; runs in a daemon thread."""
+    from zoneinfo import ZoneInfo
+    et = ZoneInfo("America/New_York")
+    try:
+        hour = int(os.environ.get("PD_GRADE_HOUR_ET", "21"))
+    except (ValueError, TypeError):
+        hour = 21
+    hour = max(0, min(hour, 23))
+    while True:
+        now = datetime.now(et)
+        target = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+        if target <= now:
+            target = target + timedelta(days=1)
+        sleep_s = max(60, (target - now).total_seconds())
+        print(f"[pd-recording] next nightly grading at {target:%Y-%m-%d %I:%M %p %Z} "
+              f"({int(sleep_s)}s)", flush=True)
+        time.sleep(sleep_s)
+        try:
+            _grade_pending_recordings(runtime)
+        except Exception as exc:
+            print(f"[pd-recording] nightly grading error: {exc}", flush=True)
 
 
 def _auto_link_recording(runtime: "HermesRuntime", rec_id: int) -> None:
@@ -500,6 +554,8 @@ def _grade_recording(runtime: "HermesRuntime", rec_id: int, transcript: str) -> 
         })
         overall = grades.get("battle_score", {}).get("overall", "?")
         print(f"[call-recordings] Graded {rec_id}: {grades.get('call_score', '?')} (battle: {overall}/10)")
+        from .discord_notify import notify_recording_graded
+        notify_recording_graded(runtime.store, rec_id)
     else:
         print(f"[call-recordings] Skipping grading for {rec_id} — no CLI or API key available")
 
@@ -822,6 +878,12 @@ class HermesRuntime:
         self.orchestrator = AgentOrchestrator(self.store, self)
         self.orchestrator.start_scheduler()
 
+        from .discord_notify import start_daily_scheduler
+        start_daily_scheduler(self.store)
+
+        # Nightly batch-grading of power-dialer recordings (transcribed-but-ungraded).
+        threading.Thread(target=_pd_grade_scheduler, args=(self,), daemon=True).start()
+
         from .agents.mega_orchestrator import MegaOrchestrator
         self.mega = MegaOrchestrator(self.store, self)
 
@@ -942,6 +1004,15 @@ class HermesRuntime:
                 self.end_headers()
                 self.wfile.write(body)
 
+            def _send_xml(self, xml: str, status: int = HTTPStatus.OK) -> None:
+                body = xml.encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "text/xml; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self._cors_headers()
+                self.end_headers()
+                self.wfile.write(body)
+
             def _read_json(self) -> dict[str, Any]:
                 length = int(self.headers.get("Content-Length") or "0")
                 raw = self.rfile.read(length) if length else b"{}"
@@ -1016,6 +1087,79 @@ class HermesRuntime:
                     user = self._require_auth()
                     if not user:
                         return
+
+                # ── Twilio Voice (browser dialer) ─────────────────────
+                if path == "/api/twilio/status":
+                    cfg = _twilio_config()
+                    has_creds = all([
+                        cfg["account_sid"], cfg["api_key_sid"],
+                        cfg["api_key_secret"], cfg["phone_number"],
+                    ])
+                    self._send_json(HTTPStatus.OK, {
+                        "configured": _twilio_ready(),
+                        "has_credentials": has_creds,
+                        "twiml_app_configured": bool(cfg["twiml_app_sid"]),
+                        "account_sid": cfg["account_sid"] or None,
+                        "phone_number": cfg["phone_number"] or None,
+                    })
+                    return
+
+                # Live Twilio balance + confirmed spend (for the Finances tab).
+                if path == "/api/twilio/usage":
+                    self._send_json(HTTPStatus.OK, _twilio_usage())
+                    return
+
+                if path == "/api/twilio/token":
+                    if not _twilio_ready():
+                        self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {
+                            "error": "Twilio not fully configured (missing TwiML App SID?)",
+                        })
+                        return
+                    identity = f"user_{user['id']}"
+                    token = _twilio_voice_token(identity)
+                    if not token:
+                        self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {
+                            "error": "Failed to mint Twilio token",
+                        })
+                        return
+                    self._send_json(HTTPStatus.OK, {"token": token, "identity": identity})
+                    return
+
+                # Power dialer: state for the logged-in agent.
+                if path == "/api/pd/state":
+                    self._send_json(HTTPStatus.OK, _get_power_dialer(runtime).agent_state(str(user["id"])))
+                    return
+
+                # Power dialer metrics (§14). Per-agent by default; scope=all gives the
+                # account-wide roll-up for the KPI dashboard.
+                if path == "/api/pd/metrics":
+                    try:
+                        hours = int(query.get("hours", ["24"])[0])
+                    except (ValueError, TypeError):
+                        hours = 24
+                    hours = max(1, min(hours, 720))
+                    scope = (query.get("scope", ["mine"])[0] or "mine").lower()
+                    agent = None if scope == "all" else str(user["id"])
+                    self._send_json(HTTPStatus.OK,
+                                    _get_power_dialer(runtime).metrics(agent, hours))
+                    return
+
+                # Auto-dialer: current session state for the logged-in caller.
+                if path == "/api/dialer/session/state":
+                    st = _dialer.state(user["id"])
+                    self._send_json(HTTPStatus.OK, st or {"status": "idle"})
+                    return
+
+                # Setup helper: returns the public URL to paste into the TwiML App.
+                if path == "/api/twilio/voice-url":
+                    public = _public_base_url()
+                    base = public or "http://localhost:8765"
+                    self._send_json(HTTPStatus.OK, {
+                        "tunnel_url": public,
+                        "voice_url": f"{base}/twilio/voice",
+                        "is_public": bool(public),
+                    })
+                    return
 
                 if path == "/bridge/poll":
                     lane = (query.get("lane") or ["houses"])[0]
@@ -1132,6 +1276,13 @@ class HermesRuntime:
                         self._send_json(HTTPStatus.FORBIDDEN, {"error": "Admin only"})
                         return
                     self._send_json(HTTPStatus.OK, runtime.store.get_assignment_stats())
+                    return
+
+                if path == "/api/leads/lists":
+                    if user["role"] != "admin":
+                        self._send_json(HTTPStatus.FORBIDDEN, {"error": "Admin only"})
+                        return
+                    self._send_json(HTTPStatus.OK, runtime.store.get_list_overview())
                     return
 
                 if path == "/api/leads/assignments/compare":
@@ -1782,6 +1933,104 @@ class HermesRuntime:
                     self._send_json(HTTPStatus.OK, {"status": "ok"})
                     return
 
+                # ── Twilio voice webhooks (called BY Twilio, no auth) ──
+                # The TwiML App's Voice Request URL points here. Twilio POSTs
+                # form-encoded params and expects TwiML back.
+                #  - Mode=session  → agent's browser leg joining the auto-dialer conference
+                #  - otherwise     → single manual click-to-dial (dials "To")
+                if path == "/twilio/voice":
+                    length = int(self.headers.get("Content-Length") or "0")
+                    raw = self.rfile.read(length) if length else b""
+                    form = parse_qs(raw.decode("utf-8", "replace"))
+                    mode = (form.get("Mode") or [""])[0]
+                    from_id = (form.get("From") or [""])[0]
+                    if mode == "session" and from_id.startswith("client:user_"):
+                        try:
+                            cid = int(from_id.split("user_", 1)[1])
+                            xml = _twilio_conference_twiml(
+                                _DialerManager.conference_name(cid), is_agent=True)
+                        except (ValueError, IndexError):
+                            xml = _twilio_hangup_twiml()
+                    else:
+                        xml = _twilio_voice_twiml((form.get("To") or [""])[0])
+                    self._send_xml(xml)
+                    return
+
+                # Auto-dialer: a lead call was answered — Twilio has run AMD and
+                # passes AnsweredBy. Bridge humans into the conference, hang up machines.
+                if path == "/twilio/lead-answer":
+                    q = parse_qs(urlparse(self.path).query)
+                    length = int(self.headers.get("Content-Length") or "0")
+                    raw = self.rfile.read(length) if length else b""
+                    form = parse_qs(raw.decode("utf-8", "replace"))
+                    caller_id = int((q.get("caller") or ["0"])[0] or 0)
+                    lead_id = (q.get("lead") or [""])[0]
+                    answered_by = (form.get("AnsweredBy") or [""])[0]
+                    xml = _dialer.on_lead_answer(caller_id, lead_id, answered_by, runtime.store)
+                    self._send_xml(xml)
+                    return
+
+                # ── Power dialer webhooks (called BY Twilio, no auth) ──
+                if path in ("/pd/answer", "/pd/amd", "/pd/status", "/pd/agent-join"):
+                    q = parse_qs(urlparse(self.path).query)
+                    length = int(self.headers.get("Content-Length") or "0")
+                    raw = self.rfile.read(length) if length else b""
+                    form = parse_qs(raw.decode("utf-8", "replace"))
+                    pd = _get_power_dialer(runtime)
+                    leg = (q.get("leg") or [""])[0]
+                    if path == "/pd/answer":
+                        self._send_xml(pd.handle_answer(leg))
+                    elif path == "/pd/agent-join":
+                        self._send_xml(pd.agent_join_twiml((q.get("conf") or [""])[0]))
+                    elif path == "/pd/amd":
+                        pd.handle_amd(leg, (form.get("AnsweredBy") or [""])[0])
+                        self._send_json(HTTPStatus.OK, {"status": "ok"})
+                    else:  # /pd/status
+                        try:
+                            dur = int((form.get("CallDuration") or ["0"])[0] or 0)
+                        except ValueError:
+                            dur = 0
+                        pd.handle_status(leg, (form.get("CallStatus") or [""])[0], dur)
+                        self._send_json(HTTPStatus.OK, {"status": "ok"})
+                    return
+
+                # Power dialer: completed call recording (called BY Twilio, no auth).
+                # Ack immediately, then download+ingest off-thread so Twilio isn't held.
+                if path == "/pd/recording":
+                    q = parse_qs(urlparse(self.path).query)
+                    length = int(self.headers.get("Content-Length") or "0")
+                    raw = self.rfile.read(length) if length else b""
+                    form = parse_qs(raw.decode("utf-8", "replace"))
+                    leg = (q.get("leg") or [""])[0]
+                    rec_url = (form.get("RecordingUrl") or [""])[0]
+                    rec_sid = (form.get("RecordingSid") or [""])[0]
+                    call_sid = (form.get("CallSid") or [""])[0]
+                    self._send_json(HTTPStatus.OK, {"status": "ok"})
+                    if rec_url and rec_sid:
+                        threading.Thread(
+                            target=_pd_ingest_recording,
+                            args=(runtime, leg, call_sid, rec_sid, rec_url),
+                            daemon=True,
+                        ).start()
+                    return
+
+                # Auto-dialer: terminal call status (no-answer/busy/failed/completed).
+                if path == "/twilio/call-status":
+                    q = parse_qs(urlparse(self.path).query)
+                    length = int(self.headers.get("Content-Length") or "0")
+                    raw = self.rfile.read(length) if length else b""
+                    form = parse_qs(raw.decode("utf-8", "replace"))
+                    caller_id = int((q.get("caller") or ["0"])[0] or 0)
+                    lead_id = (q.get("lead") or [""])[0]
+                    call_status = (form.get("CallStatus") or [""])[0]
+                    try:
+                        duration_sec = int((form.get("CallDuration") or ["0"])[0] or 0)
+                    except ValueError:
+                        duration_sec = 0
+                    _dialer.on_call_status(caller_id, lead_id, call_status, runtime.store, duration_sec)
+                    self._send_json(HTTPStatus.OK, {"status": "ok"})
+                    return
+
                 # ── User management (admin only) ──────────────────────
                 if path == "/api/users":
                     user = self._require_role("admin")
@@ -1824,6 +2073,88 @@ class HermesRuntime:
                     user = self._require_auth()
                     if not user:
                         return
+
+                # ── Auto-dialer session control (POST) ────────────────
+                # ── Power dialer control (authed) ─────────────────────
+                if path == "/api/pd/start":
+                    if not _twilio_ready():
+                        self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "Twilio not configured"})
+                        return
+                    _get_power_dialer(runtime).start_agent(str(user["id"]))
+                    self._send_json(HTTPStatus.OK, {"status": "started"})
+                    return
+                if path == "/api/pd/stop":
+                    _get_power_dialer(runtime).stop_agent(str(user["id"]))
+                    self._send_json(HTTPStatus.OK, {"status": "stopped"})
+                    return
+                if path == "/api/pd/disposition":
+                    body = self._read_json()
+                    ok = _get_power_dialer(runtime).submit_disposition(
+                        str(user["id"]), str(body.get("code") or "contact_made"),
+                        body.get("notes"), body.get("callback_at"), bool(body.get("dnc_request")))
+                    self._send_json(HTTPStatus.OK, {"ok": ok})
+                    return
+
+                # End-of-day: grade all recordings that are transcribed but ungraded.
+                if path == "/api/pd/recordings/grade-pending":
+                    stats = runtime.store.call_recording_stats()
+                    pending = stats.get("pending_grade", 0)
+                    threading.Thread(target=_grade_pending_recordings,
+                                     args=(runtime,), daemon=True).start()
+                    self._send_json(HTTPStatus.OK, {"queued": pending})
+                    return
+
+                if path == "/api/dialer/session/start":
+                    if not _twilio_ready():
+                        self._send_json(HTTPStatus.SERVICE_UNAVAILABLE,
+                                        {"error": "Twilio not configured"})
+                        return
+                    body = self._read_json()
+                    raw_queue = body.get("queue") or []
+                    queue = [
+                        {"lead_id": str(item.get("lead_id")),
+                         "phone": item.get("phone"),
+                         "name": item.get("name")}
+                        for item in raw_queue
+                        if item.get("lead_id") and item.get("phone")
+                    ]
+                    if not queue:
+                        self._send_json(HTTPStatus.BAD_REQUEST,
+                                        {"error": "Empty queue (no leads with phone numbers)"})
+                        return
+                    base = _public_base_url() or "http://localhost:8765"
+                    lines = int(body.get("lines") or 3)
+                    st = _dialer.start(user["id"], queue, runtime.store, base, lines)
+                    self._send_json(HTTPStatus.OK, st)
+                    return
+
+                if path == "/api/dialer/session/pause":
+                    st = _dialer.pause(user["id"])
+                    self._send_json(HTTPStatus.OK, st or {"status": "idle"})
+                    return
+
+                if path == "/api/dialer/session/resume":
+                    st = _dialer.resume(user["id"], runtime.store)
+                    self._send_json(HTTPStatus.OK, st or {"status": "idle"})
+                    return
+
+                if path == "/api/dialer/session/stop":
+                    st = _dialer.stop(user["id"])
+                    self._send_json(HTTPStatus.OK, st or {"status": "stopped"})
+                    return
+
+                if path == "/api/dialer/disposition":
+                    body = self._read_json()
+                    lead_id = str(body.get("lead_id") or "")
+                    disposition = str(body.get("disposition") or "")
+                    note = body.get("note")
+                    if not lead_id or not disposition:
+                        self._send_json(HTTPStatus.BAD_REQUEST,
+                                        {"error": "lead_id and disposition required"})
+                        return
+                    st = _dialer.disposition(user["id"], lead_id, disposition, note, runtime.store)
+                    self._send_json(HTTPStatus.OK, st or {"status": "idle"})
+                    return
 
                 # ── Schedule API (POST) ───────────────────────────────
 
@@ -1868,6 +2199,21 @@ class HermesRuntime:
                     body = self._read_json()
                     result = runtime.store.assign_leads_to_caller(
                         int(body["user_id"]), body.get("lead_ids", []),
+                    )
+                    self._send_json(HTTPStatus.OK, result)
+                    return
+
+                if path == "/api/leads/assignments/assign-list":
+                    if user["role"] != "admin":
+                        self._send_json(HTTPStatus.FORBIDDEN, {"error": "Admin only"})
+                        return
+                    body = self._read_json()
+                    uid_raw = body.get("user_id")
+                    from_raw = body.get("from_user_id")
+                    result = runtime.store.assign_list_to_caller(
+                        body["list_name"],
+                        int(uid_raw) if uid_raw is not None else None,
+                        int(from_raw) if from_raw is not None else None,
                     )
                     self._send_json(HTTPStatus.OK, result)
                     return
@@ -1987,7 +2333,40 @@ class HermesRuntime:
                         threading.Thread(
                             target=_run_underwriting_bg, args=(runtime, lead_id), daemon=True,
                         ).start()
+                        from .discord_notify import notify_set
+                        _caller = user["display_name"] if user else "Unknown"
+                        threading.Thread(
+                            target=notify_set, args=(runtime.store, lead_id, _caller), daemon=True,
+                        ).start()
                     self._send_json(HTTPStatus.OK, result)
+                    return
+
+                m = re.match(r"^/api/leads/([^/]+)/set$", path)
+                if m:
+                    lead_id = m.group(1)
+                    body = self._read_json()
+                    appointment_at = body.get("appointment_at", "")
+                    notes = body.get("notes", "")
+                    phone_number = body.get("phone_number")
+                    caller_name = user["display_name"] if user else "Unknown"
+                    caller_id = user["id"] if user else None
+                    if notes:
+                        runtime.store.add_lead_note(lead_id, "call_note", notes)
+                    runtime.store.log_call_attempt(lead_id, "interested", notes or None, phone_number, caller_id=caller_id)
+                    result = runtime.store.update_lead_status_api(lead_id, "interested", "Set booked — dial time")
+                    if result.get("status") == "ok":
+                        threading.Thread(
+                            target=_run_underwriting_bg, args=(runtime, lead_id), daemon=True,
+                        ).start()
+                        if appointment_at:
+                            runtime.store.create_follow_up(lead_id, "set", appointment_at, notes or None)
+                        from .discord_notify import notify_set_appointment
+                        threading.Thread(
+                            target=notify_set_appointment,
+                            args=(runtime.store, lead_id, caller_name, appointment_at, notes),
+                            daemon=True,
+                        ).start()
+                    self._send_json(HTTPStatus.OK, {**result, "discord_sent": True})
                     return
 
                 m = re.match(r"^/api/leads/([^/]+)/notes$", path)
@@ -2807,6 +3186,37 @@ class HermesRuntime:
     def serve_forever(self, host: str = "127.0.0.1", port: int = 8765) -> None:
         server = self.create_server(host=host, port=port)
         print(f"Hermes listening on {host}:{port}")
+
+        # ── Twilio dialer readiness banner ────────────────────────
+        # When Twilio creds are present the dialer needs a public tunnel up so
+        # Twilio can reach /twilio/voice. Start it in the background (non-blocking)
+        # and print the exact URL to paste into the TwiML App.
+        _tw = _twilio_config()
+        if _tw["account_sid"]:
+            def _twilio_banner():
+                url = _public_base_url(port)
+                voice_url = (
+                    f"{url}/twilio/voice" if url
+                    else "http://localhost:8765/twilio/voice  (no public URL — set PUBLIC_BASE_URL or install cloudflared)"
+                )
+                # Persist the current voice URL so it's trivial to read each run
+                # (the quick-tunnel URL rotates on every restart).
+                try:
+                    Path("/tmp/hermes-twilio-voice-url.txt").write_text(voice_url + "\n")
+                except OSError:
+                    pass
+                if _twilio_ready():
+                    synced = bool(url) and _twilio_sync_twiml_app(voice_url)
+                    print(f"[twilio] Dialer READY. Voice webhook: {voice_url}", flush=True)
+                    if synced:
+                        print("[twilio] TwiML App Voice URL auto-synced to current tunnel. ✓", flush=True)
+                    elif url:
+                        print("[twilio] WARNING: could not auto-sync TwiML App Voice URL — check it in the console.", flush=True)
+                else:
+                    print("[twilio] Credentials loaded, but TWILIO_TWIML_APP_SID is not set yet.", flush=True)
+                    print(f"[twilio] 1. Create a TwiML App with Voice Request URL = {voice_url}", flush=True)
+                    print("[twilio] 2. Put its SID in .env as TWILIO_TWIML_APP_SID, then restart.", flush=True)
+            threading.Thread(target=_twilio_banner, daemon=True).start()
 
         # On startup, check for phoneless leads and auto-trigger pipeline
         def _startup_check():
@@ -4342,6 +4752,676 @@ def _start_underwriting(runtime: "HermesRuntime", lead_id: str, refresh: bool = 
     return {"status": "started", "lead_id": lead_id}
 
 
+# ── Twilio Voice (browser dialer) ─────────────────────────────────
+
+def _twilio_config() -> dict[str, str]:
+    """Read Twilio credentials from the environment (loaded from repo .env)."""
+    return {
+        "account_sid": os.environ.get("TWILIO_ACCOUNT_SID", "").strip(),
+        "auth_token": os.environ.get("TWILIO_AUTH_TOKEN", "").strip(),
+        "api_key_sid": os.environ.get("TWILIO_API_KEY_SID", "").strip(),
+        "api_key_secret": os.environ.get("TWILIO_API_KEY_SECRET", "").strip(),
+        "phone_number": os.environ.get("TWILIO_PHONE_NUMBER", "").strip(),
+        "twiml_app_sid": os.environ.get("TWILIO_TWIML_APP_SID", "").strip(),
+    }
+
+
+def _twilio_ready() -> bool:
+    """True when every credential needed to place a browser call is present."""
+    cfg = _twilio_config()
+    return all([
+        cfg["account_sid"], cfg["api_key_sid"], cfg["api_key_secret"],
+        cfg["phone_number"], cfg["twiml_app_sid"],
+    ])
+
+
+def _b64url(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def _twilio_voice_token(identity: str, ttl: int = 3600) -> str | None:
+    """Mint a Twilio Voice access token (JWT, HS256) in pure Python.
+
+    The twilio SDK isn't installed and the rest of this server hand-rolls its
+    dependencies, so we build the token directly: a standard JWT signed with the
+    API Key Secret, carrying a Voice grant that points at our TwiML App.
+    """
+    cfg = _twilio_config()
+    if not (cfg["account_sid"] and cfg["api_key_sid"]
+            and cfg["api_key_secret"] and cfg["twiml_app_sid"]):
+        return None
+    now = int(time.time())
+    header = {"typ": "JWT", "alg": "HS256", "cty": "twilio-fpa;v=1"}
+    payload = {
+        "jti": f"{cfg['api_key_sid']}-{now}",
+        "iss": cfg["api_key_sid"],
+        "sub": cfg["account_sid"],
+        "iat": now,
+        "nbf": now,
+        "exp": now + ttl,
+        "grants": {
+            "identity": identity,
+            "voice": {
+                "incoming": {"allow": True},
+                "outgoing": {"application_sid": cfg["twiml_app_sid"]},
+            },
+        },
+    }
+    signing_input = (
+        _b64url(json.dumps(header, separators=(",", ":")).encode())
+        + "."
+        + _b64url(json.dumps(payload, separators=(",", ":")).encode())
+    )
+    signature = hmac.new(
+        cfg["api_key_secret"].encode(), signing_input.encode(), hashlib.sha256,
+    ).digest()
+    return signing_input + "." + _b64url(signature)
+
+
+def _twilio_sync_twiml_app(voice_url: str) -> bool:
+    """Point our TwiML App's Voice URL at the current tunnel via the Twilio API.
+
+    The cloudflared quick-tunnel URL rotates on every restart, so we re-sync the
+    TwiML App on startup — this keeps browser calls working without any manual
+    console edits after the one-time setup.
+    """
+    import urllib.request
+    import urllib.parse
+    import urllib.error
+
+    cfg = _twilio_config()
+    if not (cfg["account_sid"] and cfg["auth_token"] and cfg["twiml_app_sid"]):
+        return False
+    api = (
+        f"https://api.twilio.com/2010-04-01/Accounts/{cfg['account_sid']}"
+        f"/Applications/{cfg['twiml_app_sid']}.json"
+    )
+    data = urllib.parse.urlencode({"VoiceUrl": voice_url, "VoiceMethod": "POST"}).encode()
+    auth = base64.b64encode(
+        f"{cfg['account_sid']}:{cfg['auth_token']}".encode()
+    ).decode()
+    req = urllib.request.Request(api, data=data, headers={"Authorization": f"Basic {auth}"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return 200 <= resp.status < 300
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+def _twilio_api_post(path: str, params: dict[str, str]) -> dict[str, Any] | None:
+    """POST to the Twilio REST API with account basic auth. Returns parsed JSON or None."""
+    import urllib.request
+    import urllib.parse
+    import urllib.error
+
+    cfg = _twilio_config()
+    if not (cfg["account_sid"] and cfg["auth_token"]):
+        return None
+    url = f"https://api.twilio.com/2010-04-01/Accounts/{cfg['account_sid']}{path}"
+    data = urllib.parse.urlencode(params).encode()
+    auth = base64.b64encode(f"{cfg['account_sid']}:{cfg['auth_token']}".encode()).decode()
+    req = urllib.request.Request(url, data=data, headers={"Authorization": f"Basic {auth}"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            return {"_error": json.loads(exc.read().decode("utf-8"))}
+        except Exception:
+            return {"_error": {"status": exc.code}}
+    except (urllib.error.URLError, OSError):
+        return None
+
+
+def _twilio_api_get(path: str) -> dict[str, Any] | None:
+    """GET from the Twilio REST API with account basic auth. Returns parsed JSON or None."""
+    import urllib.request
+    import urllib.error
+
+    cfg = _twilio_config()
+    if not (cfg["account_sid"] and cfg["auth_token"]):
+        return None
+    url = f"https://api.twilio.com/2010-04-01/Accounts/{cfg['account_sid']}{path}"
+    auth = base64.b64encode(f"{cfg['account_sid']}:{cfg['auth_token']}".encode()).decode()
+    req = urllib.request.Request(url, headers={"Authorization": f"Basic {auth}"})
+    try:
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            return {"_error": json.loads(exc.read().decode("utf-8"))}
+        except Exception:
+            return {"_error": {"status": exc.code}}
+    except (urllib.error.URLError, OSError):
+        return None
+
+
+def _twilio_api_delete(path: str) -> bool:
+    """DELETE a Twilio REST resource (e.g. /Recordings/{sid}.json). Twilio returns
+    HTTP 204 with an empty body on success, so treat any 2xx as deleted. Returns
+    True on success. Used to purge the cloud-side recording copy after local download."""
+    import urllib.request
+    import urllib.error
+
+    cfg = _twilio_config()
+    if not (cfg["account_sid"] and cfg["auth_token"]):
+        return False
+    url = f"https://api.twilio.com/2010-04-01/Accounts/{cfg['account_sid']}{path}"
+    auth = base64.b64encode(f"{cfg['account_sid']}:{cfg['auth_token']}".encode()).decode()
+    req = urllib.request.Request(url, method="DELETE", headers={"Authorization": f"Basic {auth}"})
+    try:
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            return 200 <= resp.status < 300
+    except urllib.error.HTTPError as exc:
+        return 200 <= exc.code < 300
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+def _twilio_download(url: str, dest_path: str) -> bool:
+    """Download a Twilio media URL (e.g. a RecordingUrl) to a local path using account
+    basic auth. Returns True on success. The audio never persists off-machine — this
+    pulls it local so the Twilio copy can be deleted."""
+    import urllib.request
+    import urllib.error
+
+    cfg = _twilio_config()
+    if not (cfg["account_sid"] and cfg["auth_token"]):
+        return False
+    auth = base64.b64encode(f"{cfg['account_sid']}:{cfg['auth_token']}".encode()).decode()
+    req = urllib.request.Request(url, headers={"Authorization": f"Basic {auth}"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = resp.read()
+        Path(dest_path).write_bytes(data)
+        return len(data) > 0
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError) as exc:
+        print(f"[pd-recording] download failed: {exc}", flush=True)
+        return False
+
+
+def _pd_ingest_recording(runtime: "HermesRuntime", leg_ref: str, call_sid: str,
+                         recording_sid: str, recording_url: str) -> None:
+    """Ingest a completed PowerDialer call recording: download the audio locally,
+    DELETE the Twilio-side copy, register it in the recordings store linked to its
+    lead, then transcribe immediately (grading is deferred to end-of-day)."""
+    if not (recording_url and recording_sid):
+        return
+    import uuid
+    recordings_dir = runtime.store.data_dir / "recordings"
+    recordings_dir.mkdir(parents=True, exist_ok=True)
+    file_name = f"pd_{call_sid or recording_sid}.mp3"
+    safe_name = f"{uuid.uuid4().hex}_{file_name}"
+    file_path = str(recordings_dir / safe_name)
+
+    # Twilio media URL: append .mp3 for the audio (the callback URL has no extension).
+    media_url = recording_url if recording_url.endswith(".mp3") else recording_url + ".mp3"
+    if not _twilio_download(media_url, file_path):
+        return
+
+    # Purge the cloud copy — the recording now lives only on this machine.
+    if not _twilio_api_delete(f"/Recordings/{recording_sid}.json"):
+        print(f"[pd-recording] WARN: could not delete Twilio copy {recording_sid}", flush=True)
+
+    ctx = None
+    try:
+        ctx = _get_power_dialer(runtime).recording_context(call_sid)
+    except Exception as exc:
+        print(f"[pd-recording] lead lookup failed for {call_sid}: {exc}", flush=True)
+
+    data = {
+        "seller_name": (ctx or {}).get("seller_name") or "Unknown",
+        "property_address": (ctx or {}).get("property_address"),
+        "call_date": datetime.now(timezone.utc).isoformat(),
+        "file_path": file_path,
+        "file_name": file_name,
+        "file_type": "mp3",
+        "lead_id": (ctx or {}).get("lead_id"),
+        "notes": "Power dialer (auto)",
+    }
+    result = runtime.store.create_call_recording(data)
+    rec_id = result.get("id")
+    if not rec_id:
+        return
+    # Transcribe now (local whisper) for a live transcript; DEFER grading to the
+    # end-of-day batch (manual button / nightly scheduler).
+    threading.Thread(target=_transcribe_and_grade, args=(runtime, rec_id),
+                     kwargs={"grade": False}, daemon=True).start()
+
+
+def _twilio_usage() -> dict[str, Any]:
+    """Live Twilio account balance + actual spend (today / this month), straight
+    from Twilio — these are CONFIRMED charges, not the dialer's estimate. Balance
+    is real remaining funds; spend lags a few minutes as Twilio prices each call."""
+    def _spend(subresource: str) -> float:
+        rec = _twilio_api_get(f"/Usage/Records/{subresource}.json?Category=totalprice")
+        rows = (rec or {}).get("usage_records") or []
+        try:
+            return abs(float(rows[0].get("price"))) if rows and rows[0].get("price") else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
+    bal = _twilio_api_get("/Balance.json") or {}
+    balance = None
+    try:
+        balance = float(bal.get("balance")) if bal.get("balance") is not None else None
+    except (TypeError, ValueError):
+        balance = None
+    return {
+        "configured": bool(_twilio_config()["account_sid"] and _twilio_config()["auth_token"]),
+        "balance": balance,
+        "currency": bal.get("currency") or "USD",
+        "spend_today": _spend("Today"),
+        "spend_this_month": _spend("ThisMonth"),
+        "spend_last_30d": _spend("LastMonth") + _spend("ThisMonth"),
+        "as_of": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _twilio_create_call(
+    to_number: str, answer_url: str, status_callback: str, *, amd: bool = True,
+) -> str | None:
+    """Originate an outbound call via Twilio. Returns the Call SID, or None on failure.
+
+    With machine detection enabled, Twilio delays the request to `answer_url`
+    until it has classified the pickup, passing `AnsweredBy` — so we can bridge
+    humans to the agent and hang up on machines before any audio reaches them.
+    """
+    cfg = _twilio_config()
+    if not cfg["phone_number"]:
+        return None
+    params = {
+        "To": to_number,
+        "From": cfg["phone_number"],
+        "Url": answer_url,
+        "Method": "POST",
+        "StatusCallback": status_callback,
+        "StatusCallbackMethod": "POST",
+        "StatusCallbackEvent": "completed",
+        "Timeout": "22",
+    }
+    if amd:
+        # Give AMD enough time to classify carrier "not in service" intercepts and
+        # long machine greetings as machines (a 5s cap timed out to 'unknown', which
+        # then bridged robots to the agent). A clear human is still detected in ~2-4s.
+        params["MachineDetection"] = "Enable"
+        params["MachineDetectionTimeout"] = "12"
+    resp = _twilio_api_post("/Calls.json", params)
+    if resp and resp.get("sid"):
+        return resp["sid"]
+    return None
+
+
+def _twilio_hangup_call(call_sid: str) -> bool:
+    """Force-complete an in-progress call (used to drop machines / extra pickups)."""
+    if not call_sid:
+        return False
+    resp = _twilio_api_post(f"/Calls/{call_sid}.json", {"Status": "completed"})
+    return bool(resp and not resp.get("_error"))
+
+
+def _twilio_voice_twiml(to_number: str) -> str:
+    """Build the TwiML that dials the lead, using our Twilio number as caller ID."""
+    cfg = _twilio_config()
+
+    def _esc(s: str) -> str:
+        return (s.replace("&", "&amp;").replace("<", "&lt;")
+                 .replace(">", "&gt;").replace('"', "&quot;"))
+
+    to_number = (to_number or "").strip()
+    if not to_number:
+        return ('<?xml version="1.0" encoding="UTF-8"?>'
+                "<Response><Say>No number was provided to dial.</Say></Response>")
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        f'<Response><Dial answerOnBridge="true" callerId="{_esc(cfg["phone_number"])}">'
+        f"<Number>{_esc(to_number)}</Number></Dial></Response>"
+    )
+
+
+def _twilio_hangup_twiml() -> str:
+    return '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>'
+
+
+def _twilio_conference_twiml(conference_name: str, *, is_agent: bool) -> str:
+    """TwiML that joins a caller into the agent's session conference.
+
+    The agent leg opens/holds the conference (hearing hold music between leads);
+    a lead leg joins an already-running conference and leaving it doesn't end
+    the agent's session.
+    """
+    esc = (conference_name.replace("&", "&amp;").replace("<", "&lt;")
+           .replace(">", "&gt;").replace('"', "&quot;"))
+    if is_agent:
+        return (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<Response><Dial><Conference startConferenceOnEnter="true" '
+            'endConferenceOnExit="true" beep="false">'
+            f"{esc}</Conference></Dial></Response>"
+        )
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<Response><Dial><Conference startConferenceOnEnter="false" '
+        'endConferenceOnExit="false" beep="false">'
+        f"{esc}</Conference></Dial></Response>"
+    )
+
+
+def _to_e164(phone: str | None) -> str | None:
+    """Best-effort normalize a US phone string to E.164 (+1XXXXXXXXXX)."""
+    if not phone:
+        return None
+    p = phone.strip()
+    if p.startswith("+"):
+        digits = re.sub(r"\D", "", p)
+        return f"+{digits}" if len(digits) >= 11 else None
+    digits = re.sub(r"\D", "", p)
+    if len(digits) == 10:
+        return f"+1{digits}"
+    if len(digits) == 11 and digits.startswith("1"):
+        return f"+{digits}"
+    return None
+
+
+# Dispositions the agent picks that should also transition the lead's pipeline status.
+_DISPOSITION_STATUS = {"interested": "interested", "not_interested": "not_interested"}
+
+# Approximate Twilio rates (USD) for the live cost meter. US defaults — adjust if
+# your account's rates differ. Exact billing always shows in the Twilio console.
+_RATE_OUTBOUND_PER_MIN = 0.014   # server-originated call to the lead
+_RATE_CLIENT_PER_MIN = 0.004     # agent's browser leg sitting in the conference
+_FEE_AMD_PER_CALL = 0.0075       # answering-machine detection, per dialed number
+
+
+class _DialerManager:
+    """Event-driven, per-caller auto-dialer session state machine (Phase 1: single line).
+
+    No polling loop: each Twilio webhook (AMD result, call status) or agent action
+    (disposition) drives the next dial synchronously. A caller sits in a private
+    conference the whole session; humans get bridged in, machines/no-answers get
+    auto-logged and skipped, and the next lead is dialed automatically.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._sessions: dict[int, dict[str, Any]] = {}
+
+    @staticmethod
+    def conference_name(caller_id: int) -> str:
+        return f"session-{caller_id}"
+
+    # ── lifecycle ────────────────────────────────────────────────
+    def start(self, caller_id: int, queue: list[dict], store: Any, base_url: str,
+              lines: int = 3) -> dict:
+        with self._lock:
+            session = {
+                "caller_id": caller_id,
+                "conference": self.conference_name(caller_id),
+                "status": "active",   # active|dialing|connected|paused|stopped|completed
+                "queue": queue,
+                "cursor": 0,
+                "lines": max(1, min(int(lines or 3), 5)),
+                "inflight": {},       # lead_id -> {phone, name, call_sid}: calls dialed, not resolved
+                "connected": None,    # {lead_id, phone, name, call_sid}: the bridged human
+                "feed": [],           # recent auto-dispositions for the UI
+                "stats": {"dialed": 0, "connected": 0, "machine": 0, "no_answer": 0, "bad": 0},
+                "started_at": time.time(),
+                "billable_minutes": 0,   # sum of ceil(CallDuration/60) across lead legs
+                "base_url": base_url.rstrip("/"),
+            }
+            self._sessions[caller_id] = session
+            print(f"[dialer] session start caller={caller_id} queue={len(queue)} lines={session['lines']}", flush=True)
+            self._fill(session, store)
+            print(f"[dialer] after fill: status={session['status']} dialing_lines={len(session['inflight'])} dialed={session['stats']['dialed']}", flush=True)
+            return self._public(session)
+
+    def pause(self, caller_id: int) -> dict | None:
+        with self._lock:
+            s = self._sessions.get(caller_id)
+            if not s:
+                return None
+            if s["status"] != "connected":
+                s["status"] = "paused"
+            s["paused_flag"] = True
+            return self._public(s)
+
+    def resume(self, caller_id: int, store: Any) -> dict | None:
+        with self._lock:
+            s = self._sessions.get(caller_id)
+            if not s:
+                return None
+            s["paused_flag"] = False
+            if s["status"] == "paused":
+                s["status"] = "active"
+                self._fill(s, store)
+            return self._public(s)
+
+    def stop(self, caller_id: int) -> dict | None:
+        with self._lock:
+            s = self._sessions.pop(caller_id, None)
+            if not s:
+                return None
+            if s.get("connected") and s["connected"].get("call_sid"):
+                _twilio_hangup_call(s["connected"]["call_sid"])
+            for info in s.get("inflight", {}).values():
+                if info.get("call_sid"):
+                    _twilio_hangup_call(info["call_sid"])
+            s["inflight"] = {}
+            s["connected"] = None
+            s["status"] = "stopped"
+            return self._public(s)
+
+    def state(self, caller_id: int) -> dict | None:
+        with self._lock:
+            s = self._sessions.get(caller_id)
+            return self._public(s) if s else None
+
+    # ── Twilio webhook hooks ─────────────────────────────────────
+    def on_lead_answer(self, caller_id: int, lead_id: str, answered_by: str | None, store: Any) -> str:
+        """TwiML for an answered lead call. First human wins the race → bridged and
+        the other in-flight lines are cancelled (and re-queued). Machines get logged
+        as voicemail and hung up; a human that answers while we're already on a call
+        is re-queued for a later round."""
+        with self._lock:
+            s = self._sessions.get(caller_id)
+            if not s:
+                return _twilio_hangup_twiml()
+            info = s["inflight"].get(lead_id)
+            if not info:
+                return _twilio_hangup_twiml()   # already cancelled / stale
+
+            answered = (answered_by or "").lower()
+            # STRICT: only a confirmed human is bridged to the agent. Machine
+            # greetings, fax, carrier "not in service" intercepts, and 'unknown'
+            # (AMD couldn't confirm a human) are all auto-dropped — the agent never
+            # hears a robot. Machines log as voicemail; unclassified as no-answer
+            # (re-queued for a later retry in case it was a hard-to-detect human).
+            if answered != "human":
+                if answered.startswith(("machine", "fax")):
+                    self._log(s, store, {"lead_id": lead_id, **info}, "voicemail")
+                    s["stats"]["machine"] += 1
+                else:
+                    self._log(s, store, {"lead_id": lead_id, **info}, "no_answer")
+                    s["stats"]["no_answer"] += 1
+                del s["inflight"][lead_id]
+                self._fill(s, store)
+                return _twilio_hangup_twiml()
+
+            # Confirmed human.
+            if s.get("connected") is None:
+                s["connected"] = {"lead_id": lead_id, **info}
+                del s["inflight"][lead_id]
+                s["status"] = "connected"
+                s["stats"]["connected"] += 1
+                self._cancel_inflight(s)   # drop the other racing lines
+                return _twilio_conference_twiml(s["conference"], is_agent=False)
+
+            # We already have a live human — re-queue this extra pickup and hang up.
+            s["queue"].append({"lead_id": lead_id, "phone": info["phone"], "name": info.get("name")})
+            del s["inflight"][lead_id]
+            return _twilio_hangup_twiml()
+
+    def on_call_status(self, caller_id: int, lead_id: str, call_status: str,
+                       store: Any, duration_sec: int = 0) -> None:
+        with self._lock:
+            s = self._sessions.get(caller_id)
+            if not s:
+                return
+            # Twilio bills each connected leg rounded up to the next minute (session-level).
+            if duration_sec > 0:
+                s["billable_minutes"] += (duration_sec + 59) // 60
+            # The bridged human's call ending: keep it until the agent dispositions.
+            if s.get("connected") and s["connected"]["lead_id"] == lead_id:
+                return
+            info = s["inflight"].get(lead_id)
+            if not info:
+                return   # cancelled sibling or already handled
+            if call_status in ("no-answer", "busy", "canceled"):
+                self._log(s, store, {"lead_id": lead_id, **info}, "no_answer")
+                s["stats"]["no_answer"] += 1
+            elif call_status == "failed":
+                self._log(s, store, {"lead_id": lead_id, **info}, "bad_number")
+                s["stats"]["bad"] += 1
+            # 'completed' with no human was handled in on_lead_answer already.
+            s["inflight"].pop(lead_id, None)
+            self._fill(s, store)
+
+    # ── agent action ─────────────────────────────────────────────
+    def disposition(self, caller_id: int, lead_id: str, disposition: str, note: str | None, store: Any) -> dict | None:
+        with self._lock:
+            s = self._sessions.get(caller_id)
+            if not s:
+                return None
+            conn = s.get("connected")
+            lead = conn if (conn and conn["lead_id"] == lead_id) else {"lead_id": lead_id}
+            self._log(s, store, lead, disposition, note)
+            if conn and conn.get("call_sid"):
+                _twilio_hangup_call(conn["call_sid"])
+            s["connected"] = None
+            if s.get("paused_flag"):
+                s["status"] = "paused"
+            else:
+                s["status"] = "active"
+                self._fill(s, store)   # start the next round
+            return self._public(s)
+
+    # ── internals (must hold lock) ───────────────────────────────
+    def _cancel_inflight(self, s: dict) -> None:
+        """Hang up every still-ringing line and re-queue those leads for a later round."""
+        for lid, info in list(s["inflight"].items()):
+            if info.get("call_sid"):
+                _twilio_hangup_call(info["call_sid"])
+            s["queue"].append({"lead_id": lid, "phone": info["phone"], "name": info.get("name")})
+        s["inflight"] = {}
+
+    def _fill(self, s: dict, store: Any) -> None:
+        """Keep up to `lines` calls in flight while searching for a human."""
+        import urllib.parse
+        if s["status"] in ("paused", "stopped", "connected") or s.get("paused_flag"):
+            return
+        while len(s["inflight"]) < s["lines"] and s["cursor"] < len(s["queue"]):
+            lead = s["queue"][s["cursor"]]
+            s["cursor"] += 1
+            lead_id = lead["lead_id"]
+            if lead_id in s["inflight"]:
+                continue
+            phone = _to_e164(lead.get("phone"))
+            if not phone:
+                self._log(s, store, lead, "bad_number")
+                s["stats"]["bad"] += 1
+                continue
+            q = urllib.parse.urlencode({"caller": s["caller_id"], "lead": lead_id})
+            answer_url = f"{s['base_url']}/twilio/lead-answer?{q}"
+            status_cb = f"{s['base_url']}/twilio/call-status?{q}"
+            call_sid = _twilio_create_call(phone, answer_url, status_cb, amd=True)
+            if not call_sid:
+                print(f"[dialer] dial FAILED {lead_id} -> {phone}", flush=True)
+                self._log(s, store, lead, "bad_number")
+                s["stats"]["bad"] += 1
+                continue
+            print(f"[dialer] dialing {lead_id} -> {phone} sid={call_sid}", flush=True)
+            s["inflight"][lead_id] = {"phone": phone, "name": lead.get("name"), "call_sid": call_sid}
+            s["stats"]["dialed"] += 1
+        # Nothing in flight and nothing left to dial → the list is done.
+        if not s["inflight"] and s["cursor"] >= len(s["queue"]) and not s.get("connected"):
+            s["status"] = "completed"
+        elif s["status"] != "connected":
+            s["status"] = "dialing" if s["inflight"] else "active"
+
+    def _log(self, s: dict, store: Any, lead: dict, disposition: str, note: str | None = None) -> None:
+        lead_id = lead.get("lead_id")
+        if not lead_id:
+            return
+        digits = re.sub(r"\D", "", lead.get("phone") or "") or None
+        try:
+            store.log_call_attempt(lead_id, disposition, note, phone_number=digits, caller_id=s["caller_id"])
+            if disposition in _DISPOSITION_STATUS:
+                store.update_lead_status_api(lead_id, _DISPOSITION_STATUS[disposition], "Auto-dialer disposition")
+        except Exception as exc:  # never let a logging failure break the dial loop
+            print(f"[dialer] log_call_attempt failed for {lead_id}: {exc}", flush=True)
+        s["feed"].append({
+            "lead_id": lead_id, "name": lead.get("name"),
+            "disposition": disposition, "at": datetime.now(timezone.utc).isoformat(),
+        })
+        s["feed"] = s["feed"][-25:]
+
+    def _cost(self, s: dict) -> dict:
+        agent_min = max(0.0, (time.time() - s.get("started_at", time.time())) / 60.0)
+        detection = s["stats"]["dialed"] * _FEE_AMD_PER_CALL
+        talk = s["billable_minutes"] * _RATE_OUTBOUND_PER_MIN
+        agent = agent_min * _RATE_CLIENT_PER_MIN
+        return {
+            "total": round(detection + talk + agent, 2),
+            "detection": round(detection, 2),
+            "talk": round(talk, 2),
+            "session_leg": round(agent, 2),
+            "billable_minutes": s["billable_minutes"],
+            "session_minutes": round(agent_min, 1),
+        }
+
+    def _public(self, s: dict) -> dict:
+        conn = s.get("connected")
+        return {
+            "status": s["status"],
+            "paused": bool(s.get("paused_flag")),
+            "conference": s["conference"],
+            "lines": s.get("lines", 3),
+            "dialing_lines": len(s.get("inflight", {})),
+            "current": ({"lead_id": conn["lead_id"], "name": conn.get("name"), "phone": conn.get("phone")}
+                        if conn else None),
+            "cursor": s["cursor"],
+            "total": len(s["queue"]),
+            "feed": s["feed"][-25:],
+            "stats": s["stats"],
+            "cost": self._cost(s),
+        }
+
+
+_dialer = _DialerManager()
+
+# ── Power dialer (spec build) — lazy singleton ────────────────────
+_power_dialer = None
+
+
+def _get_power_dialer(runtime: "HermesRuntime"):
+    global _power_dialer
+    if _power_dialer is None:
+        from .power_dialer_engine import PowerDialer
+        from .carrier import TwilioCarrierAdapter
+        _power_dialer = PowerDialer(str(runtime.store.db_path), TwilioCarrierAdapter())
+        try:
+            _power_dialer.recover_orphans()   # spec §12: clean up any crash-stranded state
+        except Exception as exc:
+            print(f"[pd] orphan recovery skipped: {exc}", flush=True)
+        try:
+            n = _power_dialer.sync_did_pool()   # PD-7: local-presence caller-ID pool
+            if n:
+                print(f"[pd] DID pool synced: {n} owned number(s)", flush=True)
+        except Exception as exc:
+            print(f"[pd] DID pool sync skipped: {exc}", flush=True)
+    return _power_dialer
+
+
 _tunnel_process: subprocess.Popen | None = None
 _tunnel_url: str | None = None
 
@@ -4374,6 +5454,19 @@ def _start_tunnel(port: int = 8765) -> str | None:
     return None
 
 
+def _public_base_url(port: int = 8765) -> str | None:
+    """Preferred public base URL (scheme+host, no trailing slash) for webhooks/links.
+
+    Uses PUBLIC_BASE_URL — the stable cloudflared named-tunnel domain
+    (https://api.swarmdispo.com) — when set. Falls back to a rotating quick
+    tunnel only if no stable domain is configured.
+    """
+    explicit = os.environ.get("PUBLIC_BASE_URL", "").strip().rstrip("/")
+    if explicit:
+        return explicit
+    return _start_tunnel(port)
+
+
 def _send_contract_email(
     runtime: "HermesRuntime", contract_id: int, seller_email: str
 ) -> dict[str, Any]:
@@ -4392,9 +5485,9 @@ def _send_contract_email(
     if not contract:
         return {"status": "error", "message": "Contract not found"}
 
-    tunnel_url = _start_tunnel()
-    if tunnel_url:
-        signing_url = f"{tunnel_url}/sign/{contract['signing_token']}"
+    base_url = _public_base_url()
+    if base_url:
+        signing_url = f"{base_url}/sign/{contract['signing_token']}"
     else:
         signing_url = f"http://localhost:8765/sign/{contract['signing_token']}"
 

@@ -603,6 +603,38 @@ function CallMetricsRow() {
   )
 }
 
+// ── Power Dialer Metrics Row (server-driven, zero-abandonment) ──
+
+function PowerDialerMetricsRow() {
+  const { data: m } = useQuery({
+    queryKey: ['kpi-pd-metrics'],
+    queryFn: () => hermesClient.pd.metrics(24, 'all'),
+    refetchInterval: 30_000,
+  })
+
+  if (!m) return null
+
+  const fmtDur = (s: number) => (s ? (s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`) : '—')
+
+  return (
+    <div style={{
+      display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+      gap: 12, marginBottom: 16,
+    }}>
+      <TrophyCard label="PD Dials" value={String(m.dials)} color="#6366f1"
+        sub={`${m.conversations} conversations`} icon="⚡" />
+      <TrophyCard label="Connected" value={String(m.connects)} color="#22c55e"
+        sub={`${Math.round(m.connect_rate * 100)}% connect rate`} icon="🤝" glow={m.connects > 0} />
+      <TrophyCard label="Voicemail" value={String(m.outcomes.machine)} color="#a78bfa"
+        sub="auto-screened" />
+      <TrophyCard label="No Answer" value={String(m.outcomes.no_answer)} color="#64748b" />
+      <TrophyCard label="Avg Talk" value={fmtDur(m.avg_talk_seconds)} color="#38bdf8" />
+      <TrophyCard label="Dial Cost" value={`$${m.est_dial_cost.toFixed(2)}`} color="#eab308"
+        sub={m.connects > 0 ? `$${m.cost_per_connect.toFixed(2)}/connect` : undefined} />
+    </div>
+  )
+}
+
 // ── Daily Activity Chart (SVG) ──────────────────────────────
 
 function DailyActivityChart() {
@@ -961,6 +993,12 @@ function AdminKpiView() {
       </div>
       <CallMetricsRow />
 
+      {/* Power dialer (server-driven, zero-abandonment) */}
+      <div style={{ fontSize: 12, color: '#64748b', margin: '4px 0 12px', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+        Power Dialer · Last 24h
+      </div>
+      <PowerDialerMetricsRow />
+
       {/* Funnel + Chart side by side */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
         <ConversionFunnel />
@@ -1051,7 +1089,7 @@ function CallerKpiView({ userId }: { userId: number }) {
             value={`${Math.round(activity.active_minutes)} min`}
             color="#3b82f6"
           />
-          <TrophyCard label="Dials/Hour" value={String(Math.round(activity.calls_per_hour))} color="#f59e0b" />
+          <TrophyCard label="Dials/Hour" value={activity.calls_per_hour != null ? String(Math.round(activity.calls_per_hour)) : '—'} color="#f59e0b" />
         </div>
       )}
 

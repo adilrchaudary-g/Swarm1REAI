@@ -448,11 +448,21 @@ function ListView({ onSelect, onUpload, onSessionUpload }: { onSelect: (id: numb
     refetchInterval: 10_000,
   })
 
+  const queryClient = useQueryClient()
   const { data: stats } = useQuery({
     queryKey: ['call-recordings-stats'],
     queryFn: () => hermesClient.callRecordings.stats(),
     refetchInterval: 15_000,
   })
+
+  const gradePending = useMutation({
+    mutationFn: () => hermesClient.callRecordings.gradePending(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['call-recordings'] })
+      queryClient.invalidateQueries({ queryKey: ['call-recordings-stats'] })
+    },
+  })
+  const pendingGrade = stats?.pending_grade ?? 0
 
   return (
     <div>
@@ -462,10 +472,26 @@ function ListView({ onSelect, onUpload, onSessionUpload }: { onSelect: (id: numb
           {stats && (
             <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>
               {stats.total} recordings · {stats.transcribed} transcribed · {stats.graded} graded
+              {pendingGrade > 0 && <span style={{ color: '#eab308' }}> · {pendingGrade} awaiting grade</span>}
             </div>
           )}
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
+          {pendingGrade > 0 && (
+            <button
+              onClick={() => gradePending.mutate()}
+              disabled={gradePending.isPending}
+              title="Transcription runs live during dialing; grading is batched to save tokens. Run it now."
+              style={{
+                padding: '8px 16px', borderRadius: 6, border: '1px solid #eab30840',
+                background: '#eab30818', color: '#eab308', fontSize: 13,
+                cursor: gradePending.isPending ? 'wait' : 'pointer', fontWeight: 600,
+                opacity: gradePending.isPending ? 0.6 : 1,
+              }}
+            >
+              {gradePending.isPending ? 'Grading…' : `⚡ Grade pending (${pendingGrade})`}
+            </button>
+          )}
           <button
             onClick={onSessionUpload}
             style={{

@@ -498,6 +498,7 @@ export interface CallRecordingStats {
   total: number
   transcribed: number
   graded: number
+  pending_grade?: number
   by_score: Record<string, number>
 }
 
@@ -893,7 +894,7 @@ export interface CallerActivity {
   sessions: ActivitySession[]
   buckets: Record<string, number>
   gaps: ActivityGap[]
-  calls_per_hour: number
+  calls_per_hour: number | null
   first_call: string | null
   last_call: string | null
   disposition_counts: Record<string, number>
